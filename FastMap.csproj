@@ -1,0 +1,54 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+    <GamePath>C:\Program Files (x86)\Steam\steamapps\common\Vintage Story</GamePath>
+    <GamePath Condition="Exists('C:\Users\$(USERNAME)\AppData\Roaming\Vintagestory')">C:\Users\$(USERNAME)\AppData\Roaming\Vintagestory</GamePath>
+    <GamePath Condition="Exists('$(VINTAGE_STORY)')">$(VINTAGE_STORY)</GamePath>
+    <AssemblyName>FastMap</AssemblyName>
+    <RootNamespace>FastMap</RootNamespace>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="VintagestoryAPI.dll">
+      <HintPath>$(GamePath)\VintagestoryAPI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="VintagestoryLib.dll">
+      <HintPath>$(GamePath)\VintagestoryLib.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="VSEssentials.dll">
+      <HintPath>$(GamePath)\Mods\VSEssentials.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="protobuf-net.dll">
+      <HintPath>$(GamePath)\Lib\protobuf-net.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <Target Name="PackageMod" AfterTargets="Build">
+    <PropertyGroup>
+      <ModFolderName>FastMap</ModFolderName>
+      <ModPackageDir>ModPackage\$(ModFolderName)\</ModPackageDir>
+      <FullModPackagePath>$(OutputPath)\$(ModPackageDir)</FullModPackagePath>
+    </PropertyGroup>
+
+    <Message Text="Packaging FastMap mod to: $(FullModPackagePath)" Importance="high" />
+
+    <MakeDir Directories="$(FullModPackagePath)" />
+    <Copy SourceFiles="modinfo.json" DestinationFolder="$(FullModPackagePath)" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(FullModPackagePath)" />
+
+    <ItemGroup>
+      <_ModAssets Include="assets\**\*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_ModAssets)" DestinationFiles="@(_ModAssets->'$(FullModPackagePath)assets\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+
+    <Message Text="FastMap mod packaged successfully." Importance="high" />
+  </Target>
+</Project>
