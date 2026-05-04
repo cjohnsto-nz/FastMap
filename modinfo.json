@@ -4,7 +4,7 @@
   "name": "Fast Map",
   "authors": ["chrisunfocused"],
   "version": "0.1.0",
-  "description": "A client-side world map cache that keeps explored terrain pages warm, persists them to disk, and makes reopening the map much faster.",
+  "description": "Map. but Fast",
   "dependencies": {
     "game": "1.22.0"
   },

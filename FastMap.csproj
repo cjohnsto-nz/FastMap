@@ -42,6 +42,7 @@
 
     <MakeDir Directories="$(FullModPackagePath)" />
     <Copy SourceFiles="modinfo.json" DestinationFolder="$(FullModPackagePath)" />
+    <Copy SourceFiles="modicon.png" DestinationFolder="$(FullModPackagePath)" Condition="Exists('modicon.png')" />
     <Copy SourceFiles="README.md" DestinationFolder="$(FullModPackagePath)" Condition="Exists('README.md')" />
     <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(FullModPackagePath)" />
 
