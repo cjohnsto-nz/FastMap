@@ -24,5 +24,12 @@ By default, the current cache format stores only discovered chunks inside each p
 - `ViewportLoadScale`: Loads beyond the exact viewport to reduce visible loading edges while panning and zooming. The default is `1.5`, or 150% of the viewport.
 - `PageTextureBudget`: Limits how many GPU page textures are retained before old off-screen pages are evicted.
 - `EnableCompressedCache`: Writes sparse LZ4 `pages-v2` cache files when enabled. Disable only if you need the raw legacy `pages-v1` format for troubleshooting.
+- `CleanupKeepLatestPageVersion`: Controls `.fastmap cleanupcache`. When enabled, cleanup keeps the newest `pages-vN` folder in each world cache and removes only older page-version folders.
 - `EnablePrewarm` and `PrewarmRadiusChunks`: Generate/cache nearby discovered map tiles in the background.
 - `LogStats`: Disabled by default for release. Enable it when diagnosing cache behavior in `client-main.log`.
+
+## Cache Cleanup
+
+Run `.fastmap cleanupcache` in chat to clean versioned page-cache folders. The command reports how many page-version folders and files were deleted, plus the estimated disk space freed.
+
+By default, cleanup preserves the newest `pages-vN` folder in each world cache. Disable `CleanupKeepLatestPageVersion` only if you intentionally want to remove all versioned page caches and let Fast Map rebuild them.

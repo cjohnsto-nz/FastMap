@@ -29,6 +29,14 @@
       "comment": "Write sparse LZ4-compressed pages-v2 cache files. Disable to write the older raw pages-v1 format."
     },
     {
+      "code": "CleanupKeepLatestPageVersion",
+      "type": "boolean",
+      "default": true,
+      "clientSide": true,
+      "ingui": "Cleanup keeps latest page version",
+      "comment": "When running .fastmap cleanupcache, keep the newest pages-vN folder in each world cache and delete only older page-version folders."
+    },
+    {
       "code": "ViewportLoadScale",
       "type": "float",
       "default": 1.5,
