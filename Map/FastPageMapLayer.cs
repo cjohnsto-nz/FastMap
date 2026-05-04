@@ -27,6 +27,9 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private readonly Dictionary<FastVec2i, FastMapPageComponent> pages = new();
     private readonly HashSet<FastVec2i> visibleChunks = new();
     private readonly HashSet<FastVec2i> visiblePageKeys = new();
+    private readonly Queue<FastVec2i> pageUploadQueue = new();
+    private readonly HashSet<FastVec2i> queuedPageUploads = new();
+    private readonly HashSet<FastVec2i> pagesNeedingUpload = new();
 
     private readonly object pageLoadLock = new();
     private readonly Queue<FastVec2i> pageLoadQueue = new();
@@ -164,6 +167,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         Stopwatch stopwatch = Stopwatch.StartNew();
         ProcessReadyPages(stopwatch);
         ProcessReadyPatches(stopwatch);
+        ProcessQueuedPageUploads(stopwatch);
         PrewarmAroundPlayer(dt);
         EvictPages(dt);
         LogStats(dt);
@@ -233,14 +237,48 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private void RebuildVisiblePages()
     {
         visiblePageKeys.Clear();
+        if (visibleChunks.Count == 0)
+        {
+            return;
+        }
+
+        int minX = int.MaxValue;
+        int minZ = int.MaxValue;
+        int maxX = int.MinValue;
+        int maxZ = int.MinValue;
+
         foreach (FastVec2i chunkCoord in visibleChunks)
         {
-            visiblePageKeys.Add(PageKey(chunkCoord));
+            minX = Math.Min(minX, chunkCoord.X);
+            minZ = Math.Min(minZ, chunkCoord.Y);
+            maxX = Math.Max(maxX, chunkCoord.X);
+            maxZ = Math.Max(maxZ, chunkCoord.Y);
+        }
+
+        float scale = config.ViewportLoadScale;
+        int width = maxX - minX + 1;
+        int height = maxZ - minZ + 1;
+        int padX = (int)Math.Ceiling(width * (scale - 1f) * 0.5f);
+        int padZ = (int)Math.Ceiling(height * (scale - 1f) * 0.5f);
+
+        FastVec2i minPage = PageKey(new FastVec2i(minX - padX, minZ - padZ));
+        FastVec2i maxPage = PageKey(new FastVec2i(maxX + padX, maxZ + padZ));
+
+        for (int pageZ = minPage.Y; pageZ <= maxPage.Y; pageZ++)
+        {
+            for (int pageX = minPage.X; pageX <= maxPage.X; pageX++)
+            {
+                visiblePageKeys.Add(new FastVec2i(pageX, pageZ));
+            }
         }
 
         foreach (FastVec2i pageKey in visiblePageKeys)
         {
             QueuePageLoad(pageKey);
+            if (pagesNeedingUpload.Contains(pageKey))
+            {
+                QueuePageUpload(pageKey);
+            }
         }
     }
 
@@ -248,6 +286,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
     {
         if (pages.TryGetValue(pageKey, out FastMapPageComponent? page) && page.Texture != null && !page.Texture.Disposed)
         {
+            if (pagesNeedingUpload.Contains(pageKey))
+            {
+                QueuePageUpload(pageKey);
+            }
+
             return;
         }
 
@@ -388,13 +431,13 @@ public sealed class FastPageMapLayer : RGBMapLayer
             if (visiblePageKeys.Contains(snapshot.PageKey))
             {
                 UploadPage(page);
+                pagesNeedingUpload.Remove(snapshot.PageKey);
             }
         }
     }
 
     private void ProcessReadyPatches(Stopwatch frameStopwatch)
     {
-        HashSet<FastVec2i> pagesToUpload = new();
         HashSet<FastVec2i> pagesToSave = new();
         int maxPatches = Math.Max(1, config.MaxBackgroundTilesPerPass);
         int processed = 0;
@@ -421,7 +464,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 knownMissingPages.Remove(pageKey);
             }
             pagesToSave.Add(pageKey);
-            pagesToUpload.Add(pageKey);
+            QueuePageUpload(pageKey);
             processed++;
         }
 
@@ -432,17 +475,44 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 QueuePageSave(page.CreateSnapshot());
             }
         }
+    }
 
-        foreach (FastVec2i pageKey in pagesToUpload)
+    private void QueuePageUpload(FastVec2i pageKey)
+    {
+        pagesNeedingUpload.Add(pageKey);
+        if (queuedPageUploads.Add(pageKey))
+        {
+            pageUploadQueue.Enqueue(pageKey);
+        }
+    }
+
+    private void ProcessQueuedPageUploads(Stopwatch frameStopwatch)
+    {
+        int count = Math.Min(pageUploadQueue.Count, config.MaxPageUploadsPerTick);
+        for (int i = 0; i < count; i++)
         {
             if (frameStopwatch.ElapsedMilliseconds >= config.MainThreadUploadBudgetMilliseconds)
             {
                 break;
             }
 
-            if (visiblePageKeys.Contains(pageKey) && pages.TryGetValue(pageKey, out FastMapPageComponent? page))
+            FastVec2i pageKey = pageUploadQueue.Dequeue();
+            queuedPageUploads.Remove(pageKey);
+
+            if (!pagesNeedingUpload.Contains(pageKey))
+            {
+                continue;
+            }
+
+            if (!visiblePageKeys.Contains(pageKey))
+            {
+                continue;
+            }
+
+            if (pages.TryGetValue(pageKey, out FastMapPageComponent? page))
             {
                 UploadPage(page);
+                pagesNeedingUpload.Remove(pageKey);
             }
         }
     }

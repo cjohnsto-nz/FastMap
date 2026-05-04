@@ -16,6 +16,8 @@ internal sealed class FastMapPageComponent : MapComponent
     private readonly int[] pixels = new int[PixelCount];
     private readonly uint[] validRows = new uint[ChunksPerPage];
     private LoadedTexture? texture;
+    private MeshRef? visibleChunksMesh;
+    private bool visibleChunksMeshDirty = true;
 
     public FastMapPageComponent(ICoreClientAPI capi, FastVec2i pageKey)
         : base(capi)
@@ -63,6 +65,7 @@ internal sealed class FastMapPageComponent : MapComponent
     {
         System.Array.Copy(snapshot.Pixels, pixels, pixels.Length);
         System.Array.Copy(snapshot.ValidRows, validRows, validRows.Length);
+        visibleChunksMeshDirty = true;
     }
 
     public void SetChunk(FastVec2i chunkCoord, int[] tilePixels)
@@ -82,7 +85,12 @@ internal sealed class FastMapPageComponent : MapComponent
             System.Array.Copy(tilePixels, row * ChunkSize, pixels, (dstY + row) * PageSize + dstX, ChunkSize);
         }
 
-        validRows[localChunkZ] |= 1u << localChunkX;
+        uint bit = 1u << localChunkX;
+        if ((validRows[localChunkZ] & bit) == 0)
+        {
+            validRows[localChunkZ] |= bit;
+            visibleChunksMeshDirty = true;
+        }
     }
 
     public FastMapPageSnapshot CreateSnapshot()
@@ -107,6 +115,9 @@ internal sealed class FastMapPageComponent : MapComponent
         }
 
         capi.Render.LoadOrUpdateTextureFromRgba(pixels, false, 0, ref texture);
+        capi.Render.BindTexture2d(texture.TextureId);
+        capi.Render.GlGenerateTex2DMipmaps();
+        RefreshVisibleChunksMesh();
     }
 
     public override void Render(GuiElementMap map, float dt)
@@ -116,15 +127,21 @@ internal sealed class FastMapPageComponent : MapComponent
             return;
         }
 
+        RefreshVisibleChunksMesh();
+        if (visibleChunksMesh == null || visibleChunksMesh.Disposed)
+        {
+            return;
+        }
+
         map.TranslateWorldPosToViewPos(worldPos, ref viewPos);
         capi.Render.Render2DTexture(
+            visibleChunksMesh,
             texture.TextureId,
             (float)(int)(map.Bounds.renderX + viewPos.X),
             (float)(int)(map.Bounds.renderY + viewPos.Y),
             (float)(int)(texture.Width * map.ZoomLevel),
             (float)(int)(texture.Height * map.ZoomLevel),
-            50f,
-            null
+            50f
         );
     }
 
@@ -134,5 +151,110 @@ internal sealed class FastMapPageComponent : MapComponent
         {
             texture.Dispose();
         }
+
+        if (visibleChunksMesh != null && !visibleChunksMesh.Disposed)
+        {
+            visibleChunksMesh.Dispose();
+        }
+    }
+
+    private void RefreshVisibleChunksMesh()
+    {
+        if (!visibleChunksMeshDirty)
+        {
+            return;
+        }
+
+        visibleChunksMeshDirty = false;
+        if (visibleChunksMesh != null && !visibleChunksMesh.Disposed)
+        {
+            visibleChunksMesh.Dispose();
+            visibleChunksMesh = null;
+        }
+
+        int runCount = CountValidRuns();
+        if (runCount == 0)
+        {
+            return;
+        }
+
+        MeshData mesh = new(runCount * 4, runCount * 6, withNormals: false, withUv: true, withRgba: false, withFlags: false);
+        for (int z = 0; z < ChunksPerPage; z++)
+        {
+            uint row = validRows[z];
+            int x = 0;
+            while (x < ChunksPerPage)
+            {
+                while (x < ChunksPerPage && (row & (1u << x)) == 0)
+                {
+                    x++;
+                }
+
+                if (x >= ChunksPerPage)
+                {
+                    break;
+                }
+
+                int startX = x;
+                while (x < ChunksPerPage && (row & (1u << x)) != 0)
+                {
+                    x++;
+                }
+
+                AddChunkRunQuad(mesh, startX, z, x);
+            }
+        }
+
+        visibleChunksMesh = capi.Render.UploadMesh(mesh);
+    }
+
+    private int CountValidRuns()
+    {
+        int count = 0;
+        for (int z = 0; z < ChunksPerPage; z++)
+        {
+            uint row = validRows[z];
+            bool inRun = false;
+            for (int x = 0; x < ChunksPerPage; x++)
+            {
+                bool valid = (row & (1u << x)) != 0;
+                if (valid && !inRun)
+                {
+                    count++;
+                    inRun = true;
+                }
+                else if (!valid)
+                {
+                    inRun = false;
+                }
+            }
+        }
+
+        return count;
+    }
+
+    private static void AddChunkRunQuad(MeshData mesh, int startChunkX, int chunkZ, int endChunkXExclusive)
+    {
+        float x1 = startChunkX / (float)ChunksPerPage;
+        float x2 = endChunkXExclusive / (float)ChunksPerPage;
+        float y1 = chunkZ / (float)ChunksPerPage;
+        float y2 = (chunkZ + 1) / (float)ChunksPerPage;
+        float drawX1 = x1 * 2f - 1f;
+        float drawX2 = x2 * 2f - 1f;
+        float drawY1 = y1 * 2f - 1f;
+        float drawY2 = y2 * 2f - 1f;
+        int vertexBase = mesh.VerticesCount;
+
+        mesh.AddVertex(drawX1, drawY1, 0f, x1, y1);
+        mesh.AddVertex(drawX2, drawY1, 0f, x2, y1);
+        mesh.AddVertex(drawX2, drawY2, 0f, x2, y2);
+        mesh.AddVertex(drawX1, drawY2, 0f, x1, y2);
+
+        mesh.AddIndex(vertexBase);
+        mesh.AddIndex(vertexBase + 1);
+        mesh.AddIndex(vertexBase + 2);
+        mesh.AddIndex(vertexBase);
+        mesh.AddIndex(vertexBase + 2);
+        mesh.AddIndex(vertexBase + 3);
     }
 }

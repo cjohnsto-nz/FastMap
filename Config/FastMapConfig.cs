@@ -6,6 +6,7 @@ namespace FastMap.Config;
 public sealed class FastMapConfig
 {
     public int PageTextureBudget { get; set; } = 512;
+    public float ViewportLoadScale { get; set; } = 1.5f;
     public int PrewarmRadiusChunks { get; set; } = 16;
     public bool EnablePrewarm { get; set; } = true;
     public bool RegenerateOnChunkDirty { get; set; } = true;
@@ -43,6 +44,7 @@ public sealed class FastMapConfig
     public void Normalize()
     {
         PageTextureBudget = Math.Clamp(PageTextureBudget, 16, 10000);
+        ViewportLoadScale = Math.Clamp(ViewportLoadScale, 1.0f, 4.0f);
         PrewarmRadiusChunks = Math.Clamp(PrewarmRadiusChunks, 0, 64);
         MaxBackgroundTilesPerPass = Math.Clamp(MaxBackgroundTilesPerPass, 1, 1000);
         MaxPageUploadsPerTick = Math.Clamp(MaxPageUploadsPerTick, 1, 32);
