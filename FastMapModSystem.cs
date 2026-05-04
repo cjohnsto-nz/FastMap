@@ -3,12 +3,17 @@ using FastMap.Map;
 using System;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
+using Vintagestory.API.Datastructures;
 using Vintagestory.GameContent;
 
 namespace FastMap;
 
 public sealed class FastMapModSystem : ModSystem
 {
+    private const string ModId = "fastmap";
+    private const string ConfigLibConfigSavedEvent = "configlib:fastmap:config-saved";
+    private const string ConfigLibConfigReloadEvent = "configlib:config-reload";
+
     private ICoreClientAPI? capi;
     private Action? levelFinalizeHandler;
 
@@ -25,14 +30,57 @@ public sealed class FastMapModSystem : ModSystem
         capi = api;
         Instance = this;
         Config = FastMapConfig.Load(api);
+        RegisterConfigReloadListeners(api);
 
         ReplaceTerrainLayerRegistration();
 
-        levelFinalizeHandler = ReplaceTerrainLayerRegistration;
+        levelFinalizeHandler = () => ReplaceTerrainLayerRegistration();
         api.Event.LevelFinalize += levelFinalizeHandler;
     }
 
-    private void ReplaceTerrainLayerRegistration()
+    private void RegisterConfigReloadListeners(ICoreAPI api)
+    {
+        api.Event.RegisterEventBusListener(OnConfigLibConfigSaved, filterByEventName: ConfigLibConfigSavedEvent);
+        api.Event.RegisterEventBusListener(OnConfigLibConfigReload, filterByEventName: ConfigLibConfigReloadEvent);
+    }
+
+    private void OnConfigLibConfigSaved(string eventName, ref EnumHandling handling, IAttribute data)
+    {
+        if (!IsOwnConfigEvent(data))
+        {
+            return;
+        }
+
+        ReloadConfigAndRecreateTerrainLayer();
+    }
+
+    private void OnConfigLibConfigReload(string eventName, ref EnumHandling handling, IAttribute data)
+    {
+        if (!IsOwnConfigEvent(data))
+        {
+            return;
+        }
+
+        ReloadConfigAndRecreateTerrainLayer();
+    }
+
+    private static bool IsOwnConfigEvent(IAttribute data)
+    {
+        return (data as ITreeAttribute)?.GetAsString("domain") == ModId;
+    }
+
+    private void ReloadConfigAndRecreateTerrainLayer()
+    {
+        if (capi == null)
+        {
+            return;
+        }
+
+        Config = FastMapConfig.Load(capi);
+        ReplaceTerrainLayerRegistration(recreateFastMapLayer: true);
+    }
+
+    private void ReplaceTerrainLayerRegistration(bool recreateFastMapLayer = false)
     {
         if (capi == null)
         {
@@ -52,7 +100,7 @@ public sealed class FastMapModSystem : ModSystem
         for (int i = 0; i < worldMapManager.MapLayers.Count; i++)
         {
             MapLayer layer = worldMapManager.MapLayers[i];
-            if (layer is ChunkMapLayer)
+            if (layer is ChunkMapLayer || (recreateFastMapLayer && layer is FastPageMapLayer))
             {
                 layer.OnShutDown();
                 layer.Dispose();

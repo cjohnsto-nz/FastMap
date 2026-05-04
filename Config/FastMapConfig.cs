@@ -18,7 +18,7 @@ public sealed class FastMapConfig
     public float PrewarmIntervalSeconds { get; set; } = 2.0f;
     public float PageFlushIntervalSeconds { get; set; } = 5.0f;
     public int PageFlushThreshold { get; set; } = 64;
-    public bool LogStats { get; set; } = true;
+    public bool LogStats { get; set; } = false;
     public float LogStatsIntervalSeconds { get; set; } = 5.0f;
 
     public static FastMapConfig Load(ICoreAPI api)

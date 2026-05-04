@@ -1,0 +1,199 @@
+{
+  "version": 1,
+  "file": "fastmap.json",
+  "patches": {},
+  "settings": [
+    {
+      "type": "separator",
+      "title": "Cache"
+    },
+    {
+      "code": "PageTextureBudget",
+      "type": "integer",
+      "default": 512,
+      "clientSide": true,
+      "ingui": "Page texture budget",
+      "comment": "Maximum number of cached map page textures kept in GPU memory before old off-screen pages are evicted.",
+      "range": {
+        "min": 16,
+        "max": 10000,
+        "step": 16
+      }
+    },
+    {
+      "code": "ViewportLoadScale",
+      "type": "float",
+      "default": 1.5,
+      "clientSide": true,
+      "ingui": "Viewport load scale",
+      "comment": "How much larger than the visible map viewport FastMap should keep loaded. 1.5 means 150% of the viewport.",
+      "range": {
+        "min": 1.0,
+        "max": 4.0,
+        "step": 0.05
+      }
+    },
+    {
+      "code": "EnablePrewarm",
+      "type": "boolean",
+      "default": true,
+      "clientSide": true,
+      "ingui": "Prewarm nearby tiles",
+      "comment": "Generate and cache nearby map tiles in the background as you play."
+    },
+    {
+      "code": "PrewarmRadiusChunks",
+      "type": "integer",
+      "default": 16,
+      "clientSide": true,
+      "ingui": "Prewarm radius (chunks)",
+      "comment": "Radius around the player to prewarm when nearby-tile prewarming is enabled.",
+      "range": {
+        "min": 0,
+        "max": 64,
+        "step": 1
+      }
+    },
+    {
+      "code": "RegenerateOnChunkDirty",
+      "type": "boolean",
+      "default": true,
+      "clientSide": true,
+      "ingui": "Refresh changed chunks",
+      "comment": "Regenerate cached map pixels for chunks marked dirty by the game."
+    },
+    {
+      "type": "separator",
+      "title": "Performance"
+    },
+    {
+      "code": "MaxBackgroundTilesPerPass",
+      "type": "integer",
+      "default": 256,
+      "clientSide": true,
+      "ingui": "Background tiles per pass",
+      "comment": "Maximum map tiles FastMap may process in one background worker pass.",
+      "range": {
+        "min": 1,
+        "max": 1000,
+        "step": 1
+      }
+    },
+    {
+      "code": "MaxParallelPageLoads",
+      "type": "integer",
+      "default": 4,
+      "clientSide": true,
+      "ingui": "Parallel page loads",
+      "comment": "Maximum number of page cache load tasks that may run at once.",
+      "range": {
+        "min": 1,
+        "max": 32,
+        "step": 1
+      }
+    },
+    {
+      "code": "MaxPageUploadsPerTick",
+      "type": "integer",
+      "default": 2,
+      "clientSide": true,
+      "ingui": "Page uploads per tick",
+      "comment": "Maximum number of page textures uploaded to the GPU per client tick.",
+      "range": {
+        "min": 1,
+        "max": 32,
+        "step": 1
+      }
+    },
+    {
+      "code": "MainThreadUploadBudgetMilliseconds",
+      "type": "integer",
+      "default": 4,
+      "clientSide": true,
+      "ingui": "Upload budget (ms)",
+      "comment": "Approximate main-thread time budget for applying ready map textures each tick.",
+      "range": {
+        "min": 1,
+        "max": 32,
+        "step": 1
+      }
+    },
+    {
+      "code": "BackgroundWorkIntervalSeconds",
+      "type": "float",
+      "default": 0.01,
+      "clientSide": true,
+      "ingui": "Background work interval",
+      "comment": "Seconds between background cache work passes.",
+      "range": {
+        "min": 0.01,
+        "max": 1.0,
+        "step": 0.01
+      }
+    },
+    {
+      "code": "PrewarmIntervalSeconds",
+      "type": "float",
+      "default": 2.0,
+      "clientSide": true,
+      "ingui": "Prewarm interval",
+      "comment": "Seconds between nearby-tile prewarm scans.",
+      "range": {
+        "min": 0.25,
+        "max": 30.0,
+        "step": 0.25
+      }
+    },
+    {
+      "code": "PageFlushIntervalSeconds",
+      "type": "float",
+      "default": 5.0,
+      "clientSide": true,
+      "ingui": "Page flush interval",
+      "comment": "Seconds between writing pending cached page snapshots to disk.",
+      "range": {
+        "min": 0.5,
+        "max": 120.0,
+        "step": 0.5
+      }
+    },
+    {
+      "code": "PageFlushThreshold",
+      "type": "integer",
+      "default": 64,
+      "clientSide": true,
+      "ingui": "Page flush threshold",
+      "comment": "Flush pending page snapshots when this many pages are waiting to be saved.",
+      "range": {
+        "min": 1,
+        "max": 10000,
+        "step": 1
+      }
+    },
+    {
+      "type": "separator",
+      "title": "Diagnostics"
+    },
+    {
+      "code": "LogStats",
+      "type": "boolean",
+      "default": false,
+      "clientSide": true,
+      "ingui": "Log cache stats",
+      "comment": "Write periodic FastMap cache statistics to client-main.log. Useful for diagnostics, noisy for normal play."
+    },
+    {
+      "code": "LogStatsIntervalSeconds",
+      "type": "float",
+      "default": 5.0,
+      "clientSide": true,
+      "ingui": "Stats log interval",
+      "comment": "Seconds between FastMap cache stat log lines when stat logging is enabled.",
+      "range": {
+        "min": 1.0,
+        "max": 120.0,
+        "step": 1.0
+      }
+    }
+  ]
+}
