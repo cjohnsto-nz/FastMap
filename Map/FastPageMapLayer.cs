@@ -548,21 +548,26 @@ public sealed class FastPageMapLayer : RGBMapLayer
         {
             for (int dx = -1; dx <= 1; dx++)
             {
-                QueueChunkRepair(new FastVec2i(chunkCoord.X + dx, chunkCoord.Z + dz));
+                QueueChunkRepair(new FastVec2i(chunkCoord.X + dx, chunkCoord.Z + dz), force: true);
             }
         }
     }
 
-    private void QueueChunkRepair(FastVec2i chunkCoord)
+    private void QueueChunkRepair(FastVec2i chunkCoord, bool force = false)
     {
         if (!IsValidTile(chunkCoord))
         {
             return;
         }
 
-        if (IsChunkKnownValid(chunkCoord))
+        if (!force && IsChunkKnownValid(chunkCoord))
         {
             return;
+        }
+
+        if (force)
+        {
+            MarkChunkUnknown(chunkCoord);
         }
 
         lock (repairLock)
@@ -676,6 +681,14 @@ public sealed class FastPageMapLayer : RGBMapLayer
         lock (chunkValidityLock)
         {
             chunksKnownValid.Add(chunkCoord);
+        }
+    }
+
+    private void MarkChunkUnknown(FastVec2i chunkCoord)
+    {
+        lock (chunkValidityLock)
+        {
+            chunksKnownValid.Remove(chunkCoord);
         }
     }
 
