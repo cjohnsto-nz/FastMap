@@ -21,6 +21,14 @@
       }
     },
     {
+      "code": "EnableCompressedCache",
+      "type": "boolean",
+      "default": true,
+      "clientSide": true,
+      "ingui": "Use compressed disk cache",
+      "comment": "Write sparse LZ4-compressed pages-v2 cache files. Disable to write the older raw pages-v1 format."
+    },
+    {
       "code": "ViewportLoadScale",
       "type": "float",
       "default": 1.5,
