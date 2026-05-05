@@ -24,6 +24,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private readonly ICoreClientAPI capi;
     private readonly FastMapConfig config;
     private readonly FastMapPageDiskCache pageDiskCache;
+    private readonly FastMapTextureAtlas? textureAtlas;
     private readonly Dictionary<FastVec2i, FastMapPageComponent> pages = new();
     private readonly HashSet<FastVec2i> visibleChunks = new();
     private readonly HashSet<FastVec2i> visiblePageKeys = new();
@@ -100,6 +101,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         config = FastMapModSystem.Instance?.Config ?? new FastMapConfig();
         config.Normalize();
         pageDiskCache = new FastMapPageDiskCache(api.World.SavegameIdentifier, config.EnableCompressedCache, config.UseFilteredCache, config.UseHighCompressionCache);
+        textureAtlas = config.EnableTextureAtlas ? new FastMapTextureAtlas(capi) : null;
 
         OpenMapDatabase();
         api.Event.ChunkDirty += OnChunkDirty;
@@ -182,7 +184,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         foreach (FastVec2i pageKey in visiblePageKeys)
         {
-            if (pages.TryGetValue(pageKey, out FastMapPageComponent? page) && page.Texture != null && !page.Texture.Disposed)
+            if (pages.TryGetValue(pageKey, out FastMapPageComponent? page) && page.HasGpuTexture)
             {
                 page.LastTouchedMs = capi.ElapsedMilliseconds;
                 page.Render(mapElem, dt);
@@ -217,6 +219,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
             page.DisposeTexture();
         }
 
+        textureAtlas?.Dispose();
         pages.Clear();
         base.Dispose();
     }
@@ -284,7 +287,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void QueuePageLoad(FastVec2i pageKey)
     {
-        if (pages.TryGetValue(pageKey, out FastMapPageComponent? page) && page.Texture != null && !page.Texture.Disposed)
+        if (pages.TryGetValue(pageKey, out FastMapPageComponent? page) && page.HasGpuTexture)
         {
             if (pagesNeedingUpload.Contains(pageKey))
             {
@@ -520,7 +523,15 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private void UploadPage(FastMapPageComponent page)
     {
         Stopwatch stopwatch = Stopwatch.StartNew();
-        page.Upload();
+        if (textureAtlas != null)
+        {
+            page.Upload(textureAtlas);
+        }
+        else
+        {
+            page.Upload();
+        }
+
         page.LastTouchedMs = capi.ElapsedMilliseconds;
         Interlocked.Increment(ref pageUploads);
         Interlocked.Add(ref pageUploadMs, stopwatch.ElapsedMilliseconds);
@@ -833,11 +844,12 @@ public sealed class FastPageMapLayer : RGBMapLayer
             pageSaves
         );
         api.Logger.Notification(
-            "[FastMap] page timings loadMs={0}, uploadMs={1}, generationMs={2}, tileDbHits={3}, path={4}",
+            "[FastMap] page timings loadMs={0}, uploadMs={1}, generationMs={2}, tileDbHits={3}, atlases={4}, path={5}",
             pageLoadMs,
             pageUploadMs,
             generationMs,
             tileDbHits,
+            textureAtlas?.AtlasCount ?? 0,
             pageDiskCache.RootPath
         );
     }

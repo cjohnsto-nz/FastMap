@@ -21,6 +21,14 @@
       }
     },
     {
+      "code": "EnableTextureAtlas",
+      "type": "boolean",
+      "default": true,
+      "clientSide": true,
+      "ingui": "Use texture atlases",
+      "comment": "Group uploaded map pages into larger GPU atlas textures. This reduces texture object churn and can improve large-map loading and panning."
+    },
+    {
       "code": "EnableCompressedCache",
       "type": "boolean",
       "default": true,
@@ -42,7 +50,7 @@
       "default": false,
       "clientSide": true,
       "ingui": "Use LZ4HC cache writes",
-      "comment": "Write compressed pages-v2 cache files with LZ4 high compression. This can reduce disk usage further, but costs more CPU while saving pages."
+      "comment": "Write compressed cache files with LZ4 high compression. This can reduce disk usage further, but costs more CPU while saving pages."
     },
     {
       "code": "CleanupKeepLatestPageVersion",

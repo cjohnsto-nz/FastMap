@@ -9,6 +9,7 @@ public sealed class FastMapConfig
     public bool EnableCompressedCache { get; set; } = true;
     public bool UseFilteredCache { get; set; } = true;
     public bool UseHighCompressionCache { get; set; } = false;
+    public bool EnableTextureAtlas { get; set; } = true;
     public bool CleanupKeepLatestPageVersion { get; set; } = true;
     public float ViewportLoadScale { get; set; } = 1.5f;
     public int PrewarmRadiusChunks { get; set; } = 16;
