@@ -24,10 +24,12 @@ internal sealed class FastMapPageDiskCache
     private readonly string rootPath;
     private readonly string v1RootPath;
     private readonly bool enableCompression;
+    private readonly bool useHighCompression;
 
-    public FastMapPageDiskCache(string savegameIdentifier, bool enableCompression)
+    public FastMapPageDiskCache(string savegameIdentifier, bool enableCompression, bool useHighCompression)
     {
         this.enableCompression = enableCompression;
+        this.useHighCompression = useHighCompression;
         string worldPath = Path.Combine(GamePaths.DataPath, "FastMap", SanitizePathPart(savegameIdentifier));
         v1RootPath = Path.Combine(worldPath, "pages-v1");
         rootPath = enableCompression ? Path.Combine(worldPath, "pages-v2") : v1RootPath;
@@ -58,7 +60,8 @@ internal sealed class FastMapPageDiskCache
         string tmpPath = path + ".tmp";
         byte[] rawChunkBytes = BuildSparseChunkPayload(snapshot, out int validChunkCount);
         byte[] compressedBytes = new byte[LZ4Codec.MaximumOutputSize(rawChunkBytes.Length)];
-        int compressedLength = LZ4Codec.Encode(rawChunkBytes, 0, rawChunkBytes.Length, compressedBytes, 0, compressedBytes.Length);
+        LZ4Level compressionLevel = useHighCompression ? LZ4Level.L09_HC : LZ4Level.L00_FAST;
+        int compressedLength = LZ4Codec.Encode(rawChunkBytes, 0, rawChunkBytes.Length, compressedBytes, 0, compressedBytes.Length, compressionLevel);
         if (compressedLength <= 0)
         {
             return;

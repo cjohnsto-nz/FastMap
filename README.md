@@ -8,7 +8,7 @@ Fast Map watches the same map tile data the vanilla world map uses, but groups e
 
 On later sessions, Fast Map loads those page textures from disk instead of asking the vanilla map database and chunk-map generator to rebuild every visible tile again. Newly discovered or changed chunks are patched into the page cache and saved back to disk.
 
-By default, the current cache format stores only discovered chunks inside each page and compresses them with LZ4. Compression can be disabled in config if needed, in which case Fast Map writes the older raw `pages-v1` format. Both `pages-v1` and `pages-v2` caches are readable, so existing worlds can keep using their warmed cache.
+By default, the current cache format stores only discovered chunks inside each page and compresses them with LZ4. Optional LZ4HC writes can reduce cache size further at the cost of more CPU while saving pages. Compression can be disabled in config if needed, in which case Fast Map writes the older raw `pages-v1` format. Both `pages-v1` and `pages-v2` caches are readable, so existing worlds can keep using their warmed cache.
 
 ## Things To Know
 
@@ -24,6 +24,7 @@ By default, the current cache format stores only discovered chunks inside each p
 - `ViewportLoadScale`: Loads beyond the exact viewport to reduce visible loading edges while panning and zooming. The default is `1.5`, or 150% of the viewport.
 - `PageTextureBudget`: Limits how many GPU page textures are retained before old off-screen pages are evicted.
 - `EnableCompressedCache`: Writes sparse LZ4 `pages-v2` cache files when enabled. Disable only if you need the raw legacy `pages-v1` format for troubleshooting.
+- `UseHighCompressionCache`: Uses LZ4HC for future `pages-v2` writes. Existing cache files remain readable; loading speed is unchanged, but background saves use more CPU.
 - `CleanupKeepLatestPageVersion`: Controls `.fastmap cleanupcache`. When enabled, cleanup keeps the newest `pages-vN` folder in each world cache and removes only older page-version folders.
 - `EnablePrewarm` and `PrewarmRadiusChunks`: Generate/cache nearby discovered map tiles in the background.
 - `LogStats`: Disabled by default for release. Enable it when diagnosing cache behavior in `client-main.log`.

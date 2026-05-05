@@ -7,6 +7,7 @@ public sealed class FastMapConfig
 {
     public int PageTextureBudget { get; set; } = 512;
     public bool EnableCompressedCache { get; set; } = true;
+    public bool UseHighCompressionCache { get; set; } = false;
     public bool CleanupKeepLatestPageVersion { get; set; } = true;
     public float ViewportLoadScale { get; set; } = 1.5f;
     public int PrewarmRadiusChunks { get; set; } = 16;

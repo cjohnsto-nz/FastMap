@@ -29,6 +29,14 @@
       "comment": "Write sparse LZ4-compressed pages-v2 cache files. Disable to write the older raw pages-v1 format."
     },
     {
+      "code": "UseHighCompressionCache",
+      "type": "boolean",
+      "default": false,
+      "clientSide": true,
+      "ingui": "Use LZ4HC cache writes",
+      "comment": "Write compressed pages-v2 cache files with LZ4 high compression. This can reduce disk usage further, but costs more CPU while saving pages."
+    },
+    {
       "code": "CleanupKeepLatestPageVersion",
       "type": "boolean",
       "default": true,
