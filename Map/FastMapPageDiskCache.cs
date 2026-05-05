@@ -14,6 +14,8 @@ internal sealed class FastMapPageDiskCache
     private const int V1Version = 1;
     private const int V2Magic = 0x32504d46; // FMP2
     private const int V2Version = 2;
+    private const int V3Magic = 0x33504d46; // FMP3
+    private const int V3Version = 3;
     private const int ChunksPerPage = 32;
     private const int ChunkSize = 32;
     private const int ChunkPixelCount = ChunkSize * ChunkSize;
@@ -23,16 +25,22 @@ internal sealed class FastMapPageDiskCache
 
     private readonly string rootPath;
     private readonly string v1RootPath;
+    private readonly string v2RootPath;
+    private readonly string v3RootPath;
     private readonly bool enableCompression;
+    private readonly bool useFilteredCache;
     private readonly bool useHighCompression;
 
-    public FastMapPageDiskCache(string savegameIdentifier, bool enableCompression, bool useHighCompression)
+    public FastMapPageDiskCache(string savegameIdentifier, bool enableCompression, bool useFilteredCache, bool useHighCompression)
     {
         this.enableCompression = enableCompression;
+        this.useFilteredCache = useFilteredCache;
         this.useHighCompression = useHighCompression;
         string worldPath = Path.Combine(GamePaths.DataPath, "FastMap", SanitizePathPart(savegameIdentifier));
         v1RootPath = Path.Combine(worldPath, "pages-v1");
-        rootPath = enableCompression ? Path.Combine(worldPath, "pages-v2") : v1RootPath;
+        v2RootPath = Path.Combine(worldPath, "pages-v2");
+        v3RootPath = Path.Combine(worldPath, "pages-v3");
+        rootPath = enableCompression ? (useFilteredCache ? v3RootPath : v2RootPath) : v1RootPath;
         GamePaths.EnsurePathExists(rootPath);
     }
 
@@ -40,7 +48,7 @@ internal sealed class FastMapPageDiskCache
 
     public bool TryLoad(FastVec2i pageKey, out FastMapPageSnapshot snapshot)
     {
-        return TryLoadV2(pageKey, out snapshot) || TryLoadV1(pageKey, out snapshot);
+        return TryLoadV3(pageKey, out snapshot) || TryLoadV2(pageKey, out snapshot) || TryLoadV1(pageKey, out snapshot);
     }
 
     public void Save(FastMapPageSnapshot snapshot)
@@ -56,6 +64,17 @@ internal sealed class FastMapPageDiskCache
             return;
         }
 
+        if (useFilteredCache)
+        {
+            SaveV3(snapshot);
+            return;
+        }
+
+        SaveV2(snapshot);
+    }
+
+    private void SaveV2(FastMapPageSnapshot snapshot)
+    {
         string path = GetPath(rootPath, snapshot.PageKey);
         string tmpPath = path + ".tmp";
         byte[] rawChunkBytes = BuildSparseChunkPayload(snapshot, out int validChunkCount);
@@ -72,6 +91,44 @@ internal sealed class FastMapPageDiskCache
         {
             writer.Write(V2Magic);
             writer.Write(V2Version);
+            writer.Write(snapshot.PageKey.X);
+            writer.Write(snapshot.PageKey.Y);
+            writer.Write(ChunksPerPage);
+            writer.Write(ChunkSize);
+            writer.Write(validChunkCount);
+            writer.Write(rawChunkBytes.Length);
+            writer.Write(compressedLength);
+
+            for (int i = 0; i < snapshot.ValidRows.Length; i++)
+            {
+                writer.Write(snapshot.ValidRows[i]);
+            }
+
+            writer.Write(compressedBytes, 0, compressedLength);
+        }
+
+        File.Move(tmpPath, path, overwrite: true);
+    }
+
+    private void SaveV3(FastMapPageSnapshot snapshot)
+    {
+        string path = GetPath(rootPath, snapshot.PageKey);
+        string tmpPath = path + ".tmp";
+        byte[] rawChunkBytes = BuildSparseChunkPayload(snapshot, out int validChunkCount);
+        byte[] filteredBytes = ShuffleChannels(rawChunkBytes);
+        byte[] compressedBytes = new byte[LZ4Codec.MaximumOutputSize(filteredBytes.Length)];
+        LZ4Level compressionLevel = useHighCompression ? LZ4Level.L09_HC : LZ4Level.L00_FAST;
+        int compressedLength = LZ4Codec.Encode(filteredBytes, 0, filteredBytes.Length, compressedBytes, 0, compressedBytes.Length, compressionLevel);
+        if (compressedLength <= 0)
+        {
+            return;
+        }
+
+        using (FileStream stream = File.Open(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        using (BinaryWriter writer = new(stream))
+        {
+            writer.Write(V3Magic);
+            writer.Write(V3Version);
             writer.Write(snapshot.PageKey.X);
             writer.Write(snapshot.PageKey.Y);
             writer.Write(ChunksPerPage);
@@ -117,10 +174,73 @@ internal sealed class FastMapPageDiskCache
         File.Move(tmpPath, path, overwrite: true);
     }
 
+    private bool TryLoadV3(FastVec2i pageKey, out FastMapPageSnapshot snapshot)
+    {
+        snapshot = null!;
+        string path = GetPath(v3RootPath, pageKey);
+        if (!File.Exists(path))
+        {
+            return false;
+        }
+
+        try
+        {
+            using FileStream stream = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using BinaryReader reader = new(stream);
+
+            if (reader.ReadInt32() != V3Magic || reader.ReadInt32() != V3Version)
+            {
+                return false;
+            }
+
+            int pageX = reader.ReadInt32();
+            int pageY = reader.ReadInt32();
+            int chunksPerPage = reader.ReadInt32();
+            int chunkSize = reader.ReadInt32();
+            int validChunkCount = reader.ReadInt32();
+            int rawByteCount = reader.ReadInt32();
+            int compressedByteCount = reader.ReadInt32();
+
+            if (pageX != pageKey.X || pageY != pageKey.Y || chunksPerPage != ChunksPerPage || chunkSize != ChunkSize)
+            {
+                return false;
+            }
+
+            if (validChunkCount < 0 || validChunkCount > ChunksPerPage * ChunksPerPage || rawByteCount != validChunkCount * ChunkByteCount || compressedByteCount <= 0)
+            {
+                return false;
+            }
+
+            uint[] validRows = ReadValidRows(reader);
+            byte[] compressedBytes = reader.ReadBytes(compressedByteCount);
+            if (compressedBytes.Length != compressedByteCount)
+            {
+                return false;
+            }
+
+            byte[] filteredBytes = new byte[rawByteCount];
+            int decodedLength = LZ4Codec.Decode(compressedBytes, 0, compressedBytes.Length, filteredBytes, 0, filteredBytes.Length);
+            if (decodedLength != rawByteCount)
+            {
+                return false;
+            }
+
+            byte[] rawChunkBytes = UnshuffleChannels(filteredBytes);
+            int[] pixels = new int[PixelCount];
+            RestoreSparseChunkPayload(validRows, rawChunkBytes, pixels);
+            snapshot = new FastMapPageSnapshot(pageKey, validRows, pixels);
+            return snapshot.HasAnyValidChunks;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private bool TryLoadV2(FastVec2i pageKey, out FastMapPageSnapshot snapshot)
     {
         snapshot = null!;
-        string path = GetPath(rootPath, pageKey);
+        string path = GetPath(v2RootPath, pageKey);
         if (!File.Exists(path))
         {
             return false;
@@ -268,6 +388,40 @@ internal sealed class FastMapPageDiskCache
         }
 
         return payload;
+    }
+
+    private static byte[] ShuffleChannels(byte[] payload)
+    {
+        byte[] shuffled = new byte[payload.Length];
+        int pixelCount = payload.Length / sizeof(int);
+
+        for (int pixel = 0; pixel < pixelCount; pixel++)
+        {
+            int sourceOffset = pixel * sizeof(int);
+            shuffled[pixel] = payload[sourceOffset];
+            shuffled[pixelCount + pixel] = payload[sourceOffset + 1];
+            shuffled[pixelCount * 2 + pixel] = payload[sourceOffset + 2];
+            shuffled[pixelCount * 3 + pixel] = payload[sourceOffset + 3];
+        }
+
+        return shuffled;
+    }
+
+    private static byte[] UnshuffleChannels(byte[] payload)
+    {
+        byte[] unshuffled = new byte[payload.Length];
+        int pixelCount = payload.Length / sizeof(int);
+
+        for (int pixel = 0; pixel < pixelCount; pixel++)
+        {
+            int destinationOffset = pixel * sizeof(int);
+            unshuffled[destinationOffset] = payload[pixel];
+            unshuffled[destinationOffset + 1] = payload[pixelCount + pixel];
+            unshuffled[destinationOffset + 2] = payload[pixelCount * 2 + pixel];
+            unshuffled[destinationOffset + 3] = payload[pixelCount * 3 + pixel];
+        }
+
+        return unshuffled;
     }
 
     private static void RestoreSparseChunkPayload(uint[] validRows, byte[] payload, int[] pixels)

@@ -26,7 +26,15 @@
       "default": true,
       "clientSide": true,
       "ingui": "Use compressed disk cache",
-      "comment": "Write sparse LZ4-compressed pages-v2 cache files. Disable to write the older raw pages-v1 format."
+      "comment": "Write sparse LZ4-compressed cache files. Disable to write the older raw pages-v1 format."
+    },
+    {
+      "code": "UseFilteredCache",
+      "type": "boolean",
+      "default": true,
+      "clientSide": true,
+      "ingui": "Use filtered texture cache",
+      "comment": "Write pages-v3 cache files using a channel-shuffle filter before LZ4 compression. This usually improves RGBA texture compression with little CPU cost."
     },
     {
       "code": "UseHighCompressionCache",
