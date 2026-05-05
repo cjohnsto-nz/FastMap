@@ -187,6 +187,7 @@ internal sealed class FastMapPageComponent : MapComponent
             texture.Dispose();
         }
 
+        texture = null;
         atlasSlot?.Release();
         atlasSlot = null;
 
@@ -194,6 +195,9 @@ internal sealed class FastMapPageComponent : MapComponent
         {
             visibleChunksMesh.Dispose();
         }
+
+        visibleChunksMesh = null;
+        visibleChunksMeshDirty = true;
     }
 
     private void RefreshVisibleChunksMesh()

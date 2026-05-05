@@ -10,13 +10,14 @@ internal sealed class FastMapTextureAtlas : IDisposable
 {
     private const int PreferredAtlasSize = 4096;
     private const int TextureClampToEdge = 33071;
-    private const int TextureLinear = 9729;
+    private const int TextureNearest = 9728;
 
     private readonly ICoreClientAPI capi;
     private readonly Dictionary<FastVec2i, FastMapAtlasSlot> slotsByPage = new();
     private readonly List<AtlasTexture> atlases = new();
     private readonly int atlasSize;
     private readonly int slotsPerAxis;
+    private bool disposed;
 
     public FastMapTextureAtlas(ICoreClientAPI capi)
     {
@@ -36,6 +37,11 @@ internal sealed class FastMapTextureAtlas : IDisposable
 
     public FastMapAtlasSlot Upload(FastVec2i pageKey, int[] pixels)
     {
+        if (disposed)
+        {
+            throw new ObjectDisposedException(nameof(FastMapTextureAtlas));
+        }
+
         if (!slotsByPage.TryGetValue(pageKey, out FastMapAtlasSlot? slot))
         {
             slot = AllocateSlot(pageKey);
@@ -61,6 +67,11 @@ internal sealed class FastMapTextureAtlas : IDisposable
 
     public void Release(FastMapAtlasSlot slot)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         if (!slotsByPage.Remove(slot.PageKey))
         {
             return;
@@ -78,6 +89,12 @@ internal sealed class FastMapTextureAtlas : IDisposable
 
     public void Dispose()
     {
+        if (disposed)
+        {
+            return;
+        }
+
+        disposed = true;
         foreach (AtlasTexture atlas in atlases)
         {
             capi.Render.GLDeleteTexture(atlas.TextureId);
@@ -123,8 +140,8 @@ internal sealed class FastMapTextureAtlas : IDisposable
     {
         int textureId = GL.GenTexture();
         GL.BindTexture(TextureTarget.Texture2D, textureId);
-        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, TextureLinear);
-        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, TextureLinear);
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, TextureNearest);
+        GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, TextureNearest);
         GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, TextureClampToEdge);
         GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, TextureClampToEdge);
         GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba, atlasSize, atlasSize, 0, PixelFormat.Rgba, PixelType.UnsignedByte, IntPtr.Zero);

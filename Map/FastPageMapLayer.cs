@@ -75,6 +75,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private long pageLoadMs;
     private long pageUploadMs;
     private long generationMs;
+    private bool disposed;
 
     [ThreadStatic]
     private static byte[]? shadowMapReusable;
@@ -147,6 +148,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     public override void OnOffThreadTick(float dt)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         workerAccum += dt;
         flushAccum += dt;
 
@@ -166,6 +172,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     public override void OnTick(float dt)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         Stopwatch stopwatch = Stopwatch.StartNew();
         ProcessReadyPages(stopwatch);
         ProcessReadyPatches(stopwatch);
@@ -177,7 +188,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     public override void Render(GuiElementMap mapElem, float dt)
     {
-        if (!Active)
+        if (disposed || !Active)
         {
             return;
         }
@@ -202,13 +213,23 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     public override void OnShutDown()
     {
-        FlushPendingSaves();
-        mapdb?.Dispose();
-        mapdb = null;
+        DisposeResources();
     }
 
     public override void Dispose()
     {
+        DisposeResources();
+        base.Dispose();
+    }
+
+    private void DisposeResources()
+    {
+        if (disposed)
+        {
+            return;
+        }
+
+        disposed = true;
         api.Event.ChunkDirty -= OnChunkDirty;
         FlushPendingSaves();
         mapdb?.Dispose();
@@ -221,7 +242,13 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         textureAtlas?.Dispose();
         pages.Clear();
-        base.Dispose();
+        ClearQueues();
+        visibleChunks.Clear();
+        visiblePageKeys.Clear();
+        chunksKnownValid.Clear();
+        colorsByCode.Clear();
+        blockColorByBlockId = Array.Empty<int>();
+        chunksTmp = Array.Empty<IWorldChunk>();
     }
 
     private void OpenMapDatabase()
@@ -287,6 +314,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void QueuePageLoad(FastVec2i pageKey)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         if (pages.TryGetValue(pageKey, out FastMapPageComponent? page) && page.HasGpuTexture)
         {
             if (pagesNeedingUpload.Contains(pageKey))
@@ -313,6 +345,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void StartPageLoadTasks()
     {
+        if (disposed)
+        {
+            return;
+        }
+
         while (Volatile.Read(ref activePageLoadTasks) < config.MaxParallelPageLoads && TryDequeuePageLoad(out FastVec2i pageKey))
         {
             Interlocked.Increment(ref activePageLoadTasks);
@@ -347,9 +384,19 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void ProcessPageLoad(FastVec2i pageKey)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         Stopwatch stopwatch = Stopwatch.StartNew();
         if (pageDiskCache.TryLoad(pageKey, out FastMapPageSnapshot diskSnapshot))
         {
+            if (disposed)
+            {
+                return;
+            }
+
             Interlocked.Increment(ref pageDiskHits);
             Interlocked.Add(ref pageLoadMs, stopwatch.ElapsedMilliseconds);
             readyPages.Enqueue(diskSnapshot);
@@ -360,6 +407,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         if (TryBuildPageFromDb(pageKey, out FastMapPageSnapshot dbSnapshot))
         {
+            if (disposed)
+            {
+                return;
+            }
+
             Interlocked.Increment(ref pageDbHits);
             Interlocked.Add(ref pageLoadMs, stopwatch.ElapsedMilliseconds);
             QueuePageSave(dbSnapshot);
@@ -369,6 +421,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         Interlocked.Increment(ref pageDbMisses);
         Interlocked.Add(ref pageLoadMs, stopwatch.ElapsedMilliseconds);
+        if (disposed)
+        {
+            return;
+        }
+
         lock (pageLoadLock)
         {
             knownMissingPages.Add(pageKey);
@@ -413,6 +470,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void ProcessReadyPages(Stopwatch frameStopwatch)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         int count = Math.Min(readyPages.Count, config.MaxPageUploadsPerTick);
         for (int i = 0; i < count && readyPages.TryDequeue(out FastMapPageSnapshot? snapshot); i++)
         {
@@ -441,6 +503,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void ProcessReadyPatches(Stopwatch frameStopwatch)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         HashSet<FastVec2i> pagesToSave = new();
         int maxPatches = Math.Max(1, config.MaxBackgroundTilesPerPass);
         int processed = 0;
@@ -482,6 +549,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void QueuePageUpload(FastVec2i pageKey)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         pagesNeedingUpload.Add(pageKey);
         if (queuedPageUploads.Add(pageKey))
         {
@@ -491,6 +563,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void ProcessQueuedPageUploads(Stopwatch frameStopwatch)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         int count = Math.Min(pageUploadQueue.Count, config.MaxPageUploadsPerTick);
         for (int i = 0; i < count; i++)
         {
@@ -550,7 +627,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void OnChunkDirty(Vec3i chunkCoord, IWorldChunk chunk, EnumChunkDirtyReason reason)
     {
-        if (reason != EnumChunkDirtyReason.MarkedDirty || !config.RegenerateOnChunkDirty)
+        if (disposed || reason != EnumChunkDirtyReason.MarkedDirty || !config.RegenerateOnChunkDirty)
         {
             return;
         }
@@ -566,6 +643,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void QueueChunkRepair(FastVec2i chunkCoord, bool force = false)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         if (!IsValidTile(chunkCoord))
         {
             return;
@@ -608,6 +690,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void ProcessChunkRepairs(int maxChunks)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         for (int i = 0; i < maxChunks && TryDequeueRepair(out FastVec2i chunkCoord); i++)
         {
             IMapChunk mapChunk = api.World.BlockAccessor.GetMapChunk(chunkCoord.X, chunkCoord.Y);
@@ -624,6 +711,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 continue;
             }
 
+            if (disposed)
+            {
+                return;
+            }
+
             Interlocked.Increment(ref generatedChunks);
             readyPatches.Enqueue(new FastMapPagePatch(chunkCoord, pixels));
             QueueTileSave(chunkCoord, pixels);
@@ -632,7 +724,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void PrewarmAroundPlayer(float dt)
     {
-        if (!config.EnablePrewarm || config.PrewarmRadiusChunks <= 0)
+        if (disposed || !config.EnablePrewarm || config.PrewarmRadiusChunks <= 0)
         {
             return;
         }
@@ -705,7 +797,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void QueuePageSave(FastMapPageSnapshot snapshot)
     {
-        if (!snapshot.HasAnyValidChunks)
+        if (disposed || !snapshot.HasAnyValidChunks)
         {
             return;
         }
@@ -718,6 +810,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void QueueTileSave(FastVec2i chunkCoord, int[] pixels)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         lock (pageSaveLock)
         {
             pendingTileSaves[chunkCoord] = new MapPieceDB { Pixels = pixels };
@@ -783,6 +880,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void EvictPages(float dt)
     {
+        if (disposed)
+        {
+            return;
+        }
+
         evictAccum += dt;
         if (evictAccum < 1f || pages.Count <= config.PageTextureBudget)
         {
@@ -814,7 +916,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void LogStats(float dt)
     {
-        if (!config.LogStats)
+        if (disposed || !config.LogStats)
         {
             return;
         }
@@ -859,6 +961,40 @@ public sealed class FastPageMapLayer : RGBMapLayer
         lock (pageLoadLock)
         {
             return pageLoadQueue.Count;
+        }
+    }
+
+    private void ClearQueues()
+    {
+        lock (pageLoadLock)
+        {
+            pageLoadQueue.Clear();
+            queuedPageLoads.Clear();
+            knownMissingPages.Clear();
+        }
+
+        while (readyPages.TryDequeue(out _))
+        {
+        }
+
+        lock (repairLock)
+        {
+            repairQueue.Clear();
+            queuedRepairs.Clear();
+        }
+
+        while (readyPatches.TryDequeue(out _))
+        {
+        }
+
+        pageUploadQueue.Clear();
+        queuedPageUploads.Clear();
+        pagesNeedingUpload.Clear();
+
+        lock (pageSaveLock)
+        {
+            pendingPageSaves.Clear();
+            pendingTileSaves.Clear();
         }
     }
 
