@@ -1,9 +1,11 @@
+using FastMap.Cache;
 using FastMap.Config;
 using FastMap.Map;
 using System;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Datastructures;
+using Vintagestory.API.Server;
 using Vintagestory.GameContent;
 
 namespace FastMap;
@@ -31,6 +33,7 @@ public sealed class FastMapModSystem : ModSystem
         Instance = this;
         Config = FastMapConfig.Load(api);
         RegisterConfigReloadListeners(api);
+        RegisterClientCommands(api);
 
         ReplaceTerrainLayerRegistration();
 
@@ -42,6 +45,36 @@ public sealed class FastMapModSystem : ModSystem
     {
         api.Event.RegisterEventBusListener(OnConfigLibConfigSaved, filterByEventName: ConfigLibConfigSavedEvent);
         api.Event.RegisterEventBusListener(OnConfigLibConfigReload, filterByEventName: ConfigLibConfigReloadEvent);
+    }
+
+    private void RegisterClientCommands(ICoreClientAPI api)
+    {
+        api.ChatCommands.Create("fastmap")
+            .WithDescription("FastMap cache tools")
+            .RequiresPlayer()
+            .RequiresPrivilege(Privilege.chat)
+            .BeginSubCommand("cleanupcache")
+                .WithDescription("Delete old FastMap page-version cache folders")
+                .WithAdditionalInformation("Uses fastmap.json CleanupKeepLatestPageVersion. When enabled, the newest pages-vN folder in each world cache is preserved.")
+                .HandleWith(OnCleanupCacheCommand)
+            .EndSubCommand();
+    }
+
+    private TextCommandResult OnCleanupCacheCommand(TextCommandCallingArgs args)
+    {
+        bool keepLatest = Config.CleanupKeepLatestPageVersion;
+        FastMapCacheCleanupResult result = FastMapCacheCleanup.CleanupVersionedPageCaches(keepLatest);
+        string summary = result.ToSummary(keepLatest);
+
+        capi?.Logger.Notification("[FastMap] {0}", summary);
+        foreach (string failure in result.FailureMessages)
+        {
+            capi?.Logger.Warning("[FastMap] Cache cleanup failed for {0}", failure);
+        }
+
+        return result.Failures == 0
+            ? TextCommandResult.Success(summary)
+            : TextCommandResult.Error(summary);
     }
 
     private void OnConfigLibConfigSaved(string eventName, ref EnumHandling handling, IAttribute data)

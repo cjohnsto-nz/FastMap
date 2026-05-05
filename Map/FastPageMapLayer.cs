@@ -99,7 +99,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         capi = (ICoreClientAPI)api;
         config = FastMapModSystem.Instance?.Config ?? new FastMapConfig();
         config.Normalize();
-        pageDiskCache = new FastMapPageDiskCache(api.World.SavegameIdentifier);
+        pageDiskCache = new FastMapPageDiskCache(api.World.SavegameIdentifier, config.EnableCompressedCache, config.UseFilteredCache, config.UseHighCompressionCache);
 
         OpenMapDatabase();
         api.Event.ChunkDirty += OnChunkDirty;
