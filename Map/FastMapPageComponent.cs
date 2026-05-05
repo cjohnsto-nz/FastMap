@@ -16,6 +16,7 @@ internal sealed class FastMapPageComponent : MapComponent
     private readonly int[] pixels = new int[PixelCount];
     private readonly uint[] validRows = new uint[ChunksPerPage];
     private LoadedTexture? texture;
+    private FastMapAtlasSlot? atlasSlot;
     private MeshRef? visibleChunksMesh;
     private bool visibleChunksMeshDirty = true;
 
@@ -32,6 +33,8 @@ internal sealed class FastMapPageComponent : MapComponent
     public FastVec2i BaseChunkCoord { get; }
 
     public LoadedTexture? Texture => texture;
+
+    public bool HasGpuTexture => atlasSlot != null || (texture != null && !texture.Disposed);
 
     public long LastTouchedMs { get; set; }
 
@@ -120,9 +123,41 @@ internal sealed class FastMapPageComponent : MapComponent
         RefreshVisibleChunksMesh();
     }
 
+    public void Upload(FastMapTextureAtlas atlas)
+    {
+        if (!HasAnyValidChunks)
+        {
+            return;
+        }
+
+        if (texture != null && !texture.Disposed)
+        {
+            texture.Dispose();
+            texture = null;
+        }
+
+        FastMapAtlasSlot? previousSlot = atlasSlot;
+        atlasSlot = atlas.Upload(PageKey, pixels);
+        if (previousSlot != atlasSlot)
+        {
+            visibleChunksMeshDirty = true;
+        }
+
+        RefreshVisibleChunksMesh();
+    }
+
     public override void Render(GuiElementMap map, float dt)
     {
-        if (texture == null || texture.Disposed)
+        int textureId;
+        if (atlasSlot != null)
+        {
+            textureId = atlasSlot.TextureId;
+        }
+        else if (texture != null && !texture.Disposed)
+        {
+            textureId = texture.TextureId;
+        }
+        else
         {
             return;
         }
@@ -136,11 +171,11 @@ internal sealed class FastMapPageComponent : MapComponent
         map.TranslateWorldPosToViewPos(worldPos, ref viewPos);
         capi.Render.Render2DTexture(
             visibleChunksMesh,
-            texture.TextureId,
+            textureId,
             (float)(int)(map.Bounds.renderX + viewPos.X),
             (float)(int)(map.Bounds.renderY + viewPos.Y),
-            (float)(int)(texture.Width * map.ZoomLevel),
-            (float)(int)(texture.Height * map.ZoomLevel),
+            (float)(int)(PageSize * map.ZoomLevel),
+            (float)(int)(PageSize * map.ZoomLevel),
             50f
         );
     }
@@ -152,10 +187,17 @@ internal sealed class FastMapPageComponent : MapComponent
             texture.Dispose();
         }
 
+        texture = null;
+        atlasSlot?.Release();
+        atlasSlot = null;
+
         if (visibleChunksMesh != null && !visibleChunksMesh.Disposed)
         {
             visibleChunksMesh.Dispose();
         }
+
+        visibleChunksMesh = null;
+        visibleChunksMeshDirty = true;
     }
 
     private void RefreshVisibleChunksMesh()
@@ -201,7 +243,7 @@ internal sealed class FastMapPageComponent : MapComponent
                     x++;
                 }
 
-                AddChunkRunQuad(mesh, startX, z, x);
+                AddChunkRunQuad(mesh, startX, z, x, atlasSlot);
             }
         }
 
@@ -233,22 +275,26 @@ internal sealed class FastMapPageComponent : MapComponent
         return count;
     }
 
-    private static void AddChunkRunQuad(MeshData mesh, int startChunkX, int chunkZ, int endChunkXExclusive)
+    private static void AddChunkRunQuad(MeshData mesh, int startChunkX, int chunkZ, int endChunkXExclusive, FastMapAtlasSlot? atlasSlot)
     {
         float x1 = startChunkX / (float)ChunksPerPage;
         float x2 = endChunkXExclusive / (float)ChunksPerPage;
         float y1 = chunkZ / (float)ChunksPerPage;
         float y2 = (chunkZ + 1) / (float)ChunksPerPage;
+        float u1 = atlasSlot == null ? x1 : atlasSlot.U0 + (atlasSlot.U1 - atlasSlot.U0) * x1;
+        float u2 = atlasSlot == null ? x2 : atlasSlot.U0 + (atlasSlot.U1 - atlasSlot.U0) * x2;
+        float v1 = atlasSlot == null ? y1 : atlasSlot.V0 + (atlasSlot.V1 - atlasSlot.V0) * y1;
+        float v2 = atlasSlot == null ? y2 : atlasSlot.V0 + (atlasSlot.V1 - atlasSlot.V0) * y2;
         float drawX1 = x1 * 2f - 1f;
         float drawX2 = x2 * 2f - 1f;
         float drawY1 = y1 * 2f - 1f;
         float drawY2 = y2 * 2f - 1f;
         int vertexBase = mesh.VerticesCount;
 
-        mesh.AddVertex(drawX1, drawY1, 0f, x1, y1);
-        mesh.AddVertex(drawX2, drawY1, 0f, x2, y1);
-        mesh.AddVertex(drawX2, drawY2, 0f, x2, y2);
-        mesh.AddVertex(drawX1, drawY2, 0f, x1, y2);
+        mesh.AddVertex(drawX1, drawY1, 0f, u1, v1);
+        mesh.AddVertex(drawX2, drawY1, 0f, u2, v1);
+        mesh.AddVertex(drawX2, drawY2, 0f, u2, v2);
+        mesh.AddVertex(drawX1, drawY2, 0f, u1, v2);
 
         mesh.AddIndex(vertexBase);
         mesh.AddIndex(vertexBase + 1);
