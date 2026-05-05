@@ -7,7 +7,7 @@ public sealed class FastMapConfig
 {
     public int PageTextureBudget { get; set; } = 512;
     public bool EnableCompressedCache { get; set; } = true;
-    public bool UseFilteredCache { get; set; } = true;
+    public bool UseFilteredCache { get; set; } = false;
     public bool UseHighCompressionCache { get; set; } = false;
     public bool EnableTextureAtlas { get; set; } = true;
     public bool CleanupKeepLatestPageVersion { get; set; } = true;

@@ -39,10 +39,10 @@
     {
       "code": "UseFilteredCache",
       "type": "boolean",
-      "default": true,
+      "default": false,
       "clientSide": true,
-      "ingui": "Use filtered texture cache",
-      "comment": "Write pages-v3 cache files using a channel-shuffle filter before LZ4 compression. This usually improves RGBA texture compression with little CPU cost."
+      "ingui": "Use experimental filtered cache",
+      "comment": "Write pages-v3 cache files using a channel-shuffle filter before LZ4 compression. This may reduce cache size for some worlds, but can increase it significantly depending on map data."
     },
     {
       "code": "UseHighCompressionCache",
