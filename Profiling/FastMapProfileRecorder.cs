@@ -109,14 +109,18 @@ public static class FastMapProfileRecorder
         server?.Dispose();
     }
 
-    public static void RecordClient(string stage, int chunkX = 0, int chunkY = 0, int chunkZ = 0, double durationMs = 0, long bytes = 0, string? detail = null)
+    public static bool ClientEnabled => Volatile.Read(ref clientSink) != null;
+
+    public static bool ServerEnabled => Volatile.Read(ref serverSink) != null;
+
+    public static void RecordClient(string stage, int chunkX = 0, int chunkY = 0, int chunkZ = 0, double durationMs = 0, long bytes = 0, string? detail = null, string kind = "exclusive", string category = "general")
     {
-        Volatile.Read(ref clientSink)?.Record(stage, chunkX, chunkY, chunkZ, durationMs, bytes, detail);
+        Volatile.Read(ref clientSink)?.Record(stage, chunkX, chunkY, chunkZ, durationMs, bytes, detail, kind, category);
     }
 
-    public static void RecordServer(string stage, int chunkX = 0, int chunkY = 0, int chunkZ = 0, double durationMs = 0, long bytes = 0, string? detail = null)
+    public static void RecordServer(string stage, int chunkX = 0, int chunkY = 0, int chunkZ = 0, double durationMs = 0, long bytes = 0, string? detail = null, string kind = "exclusive", string category = "general")
     {
-        Volatile.Read(ref serverSink)?.Record(stage, chunkX, chunkY, chunkZ, durationMs, bytes, detail);
+        Volatile.Read(ref serverSink)?.Record(stage, chunkX, chunkY, chunkZ, durationMs, bytes, detail, kind, category);
     }
 
     public static long Timestamp() => Stopwatch.GetTimestamp();
@@ -146,7 +150,7 @@ public static class FastMapProfileRecorder
             Directory.CreateDirectory(directory);
             FilePath = Path.Combine(directory, "fastmap-profile-" + side + "-" + timestamp + ".csv");
             writer = new StreamWriter(new FileStream(FilePath, FileMode.Create, FileAccess.Write, FileShare.Read), Encoding.UTF8);
-            writer.WriteLine("utcTimestamp,elapsedMs,side,stage,chunkX,chunkY,chunkZ,durationMs,bytes,detail,threadId");
+            writer.WriteLine("utcTimestamp,elapsedMs,side,stage,chunkX,chunkY,chunkZ,durationMs,bytes,detail,kind,category,threadId");
             writer.Flush();
             listenerId = api.Event.RegisterGameTickListener(_ => Flush(), Math.Max(1, autoFlushIntervalSeconds) * 1000);
         }
@@ -154,7 +158,7 @@ public static class FastMapProfileRecorder
         public string FilePath { get; }
         private string Side { get; }
 
-        public void Record(string stage, int chunkX, int chunkY, int chunkZ, double durationMs, long bytes, string? detail)
+        public void Record(string stage, int chunkX, int chunkY, int chunkZ, double durationMs, long bytes, string? detail, string kind, string category)
         {
             if (disposed)
             {
@@ -174,6 +178,8 @@ public static class FastMapProfileRecorder
                 durationMs.ToString("F3", CultureInfo.InvariantCulture),
                 bytes.ToString(CultureInfo.InvariantCulture),
                 Csv(detail ?? string.Empty),
+                Csv(kind),
+                Csv(category),
                 Environment.CurrentManagedThreadId.ToString(CultureInfo.InvariantCulture));
 
             pendingLines.Enqueue(line);

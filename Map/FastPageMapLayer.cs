@@ -730,7 +730,9 @@ public sealed class FastPageMapLayer : RGBMapLayer
                     chunkCoord.X,
                     0,
                     chunkCoord.Y,
-                    FastMapProfileRecorder.ElapsedMilliseconds(repairStart));
+                    FastMapProfileRecorder.ElapsedMilliseconds(repairStart),
+                    kind: "inclusive",
+                    category: "fastmap_repair");
                 continue;
             }
 
@@ -748,7 +750,9 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 0,
                 chunkCoord.Y,
                 FastMapProfileRecorder.ElapsedMilliseconds(repairStart),
-                pixels.Length * sizeof(int));
+                pixels.Length * sizeof(int),
+                kind: "inclusive",
+                category: "fastmap_repair");
         }
     }
 
@@ -1068,24 +1072,61 @@ public sealed class FastPageMapLayer : RGBMapLayer
     {
         Stopwatch stopwatch = Stopwatch.StartNew();
         bool success = false;
+        bool profile = FastMapProfileRecorder.ClientEnabled;
         try
         {
+            long prefetchStart = profile ? FastMapProfileRecorder.Timestamp() : 0;
             for (int cy = 0; cy < chunksTmp.Length; cy++)
             {
                 IWorldChunk chunk = capi.World.BlockAccessor.GetChunk(chunkPos.X, cy, chunkPos.Y);
                 if (chunk is not IClientChunk clientChunk || !clientChunk.LoadedFromServer)
                 {
+                    if (profile)
+                    {
+                        FastMapProfileRecorder.RecordClient(
+                            "fastmap_generate_prefetch_chunks",
+                            chunkPos.X,
+                            0,
+                            chunkPos.Y,
+                            FastMapProfileRecorder.ElapsedMilliseconds(prefetchStart),
+                            detail: "missing_or_unloaded",
+                            category: "fastmap_image");
+                    }
+
                     ClearChunkScratch();
                     return null;
                 }
 
+                chunk.Unpack_ReadOnly();
                 chunksTmp[cy] = chunk;
             }
 
+            if (profile)
+            {
+                FastMapProfileRecorder.RecordClient(
+                    "fastmap_generate_prefetch_chunks",
+                    chunkPos.X,
+                    0,
+                    chunkPos.Y,
+                    FastMapProfileRecorder.ElapsedMilliseconds(prefetchStart),
+                    category: "fastmap_image");
+            }
+
             int[] pixels = new int[TilePixelCount];
+            long mapChunkStart = profile ? FastMapProfileRecorder.Timestamp() : 0;
             IMapChunk northwestMapChunk = capi.World.BlockAccessor.GetMapChunk(chunkPos.X - 1, chunkPos.Y - 1);
             IMapChunk westMapChunk = capi.World.BlockAccessor.GetMapChunk(chunkPos.X - 1, chunkPos.Y);
             IMapChunk northMapChunk = capi.World.BlockAccessor.GetMapChunk(chunkPos.X, chunkPos.Y - 1);
+            if (profile)
+            {
+                FastMapProfileRecorder.RecordClient(
+                    "fastmap_generate_fetch_mapchunks",
+                    chunkPos.X,
+                    0,
+                    chunkPos.Y,
+                    FastMapProfileRecorder.ElapsedMilliseconds(mapChunkStart),
+                    category: "fastmap_image");
+            }
 
             shadowMapReusable ??= new byte[TilePixelCount];
             shadowMapCopyReusable ??= new byte[TilePixelCount];
@@ -1094,6 +1135,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
             Array.Fill(shadowMap, (byte)128);
 
             BlockPos blockPos = new(0);
+            long pixelLoopStart = profile ? FastMapProfileRecorder.Timestamp() : 0;
             for (int index = 0; index < TilePixelCount; index++)
             {
                 int height = mapChunk.RainHeightMap[index];
@@ -1106,7 +1148,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 int localX = index % ChunkSize;
                 int localZ = index / ChunkSize;
                 float shade = CalculateShade(mapChunk, northwestMapChunk, westMapChunk, northMapChunk, localX, localZ, height);
-                int blockId = chunksTmp[chunkY].UnpackAndReadBlock(MapUtil.Index3d(localX, height % ChunkSize, localZ, ChunkSize, ChunkSize), 3);
+                int blockId = ReadBlockId(chunksTmp[chunkY], localX, height % ChunkSize, localZ);
                 Block block = api.World.Blocks[blockId];
 
                 if (block.BlockMaterial == EnumBlockMaterial.Snow && !colorAccurate && height > 0)
@@ -1115,7 +1157,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
                     chunkY = height / ChunkSize;
                     if (chunkY >= 0 && chunkY < chunksTmp.Length)
                     {
-                        blockId = chunksTmp[chunkY].UnpackAndReadBlock(MapUtil.Index3d(localX, height % ChunkSize, localZ, ChunkSize, ChunkSize), 3);
+                        blockId = ReadBlockId(chunksTmp[chunkY], localX, height % ChunkSize, localZ);
                         block = api.World.Blocks[blockId];
                     }
                 }
@@ -1140,16 +1182,48 @@ public sealed class FastPageMapLayer : RGBMapLayer
                     pixels[index] = GetMapColor(block);
                 }
             }
+            if (profile)
+            {
+                FastMapProfileRecorder.RecordClient(
+                    "fastmap_generate_pixel_loop",
+                    chunkPos.X,
+                    0,
+                    chunkPos.Y,
+                    FastMapProfileRecorder.ElapsedMilliseconds(pixelLoopStart),
+                    category: "fastmap_image");
+            }
 
+            long blurStart = profile ? FastMapProfileRecorder.Timestamp() : 0;
             Array.Copy(shadowMap, shadowMapCopy, TilePixelCount);
             BlurTool.Blur(shadowMap, ChunkSize, ChunkSize, 2);
+            if (profile)
+            {
+                FastMapProfileRecorder.RecordClient(
+                    "fastmap_generate_blur",
+                    chunkPos.X,
+                    0,
+                    chunkPos.Y,
+                    FastMapProfileRecorder.ElapsedMilliseconds(blurStart),
+                    category: "fastmap_image");
+            }
 
+            long colorMultiplyStart = profile ? FastMapProfileRecorder.Timestamp() : 0;
             for (int i = 0; i < TilePixelCount; i++)
             {
                 float blurred = ((shadowMap[i] / 128f) - 1f) * 5f;
                 float detail = (((shadowMapCopy[i] / 128f) - 1f) * 5f) % 1f;
                 float multiplier = blurred / 5f + detail / 5f + 1f;
                 pixels[i] = ColorUtil.ColorMultiply3Clamped(pixels[i], multiplier) | unchecked((int)0xFF000000);
+            }
+            if (profile)
+            {
+                FastMapProfileRecorder.RecordClient(
+                    "fastmap_generate_color_multiply",
+                    chunkPos.X,
+                    0,
+                    chunkPos.Y,
+                    FastMapProfileRecorder.ElapsedMilliseconds(colorMultiplyStart),
+                    category: "fastmap_image");
             }
 
             ClearChunkScratch();
@@ -1166,7 +1240,9 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 chunkPos.Y,
                 stopwatch.Elapsed.TotalMilliseconds,
                 success ? TilePixelCount * sizeof(int) : 0,
-                success ? "success" : "missing_source");
+                success ? "success" : "missing_source",
+                kind: "inclusive",
+                category: "fastmap_image");
         }
     }
 
@@ -1260,10 +1336,15 @@ public sealed class FastPageMapLayer : RGBMapLayer
             southZ = PositiveMod(southZ, ChunkSize);
             int localY = height % ChunkSize;
 
-            Block westBlock = api.World.Blocks[westChunk.UnpackAndReadBlock(MapUtil.Index3d(westX, localY, localZ, ChunkSize, ChunkSize), 3)];
-            Block eastBlock = api.World.Blocks[eastChunk.UnpackAndReadBlock(MapUtil.Index3d(eastX, localY, localZ, ChunkSize, ChunkSize), 3)];
-            Block northBlock = api.World.Blocks[northChunk.UnpackAndReadBlock(MapUtil.Index3d(localX, localY, northZ, ChunkSize, ChunkSize), 3)];
-            Block southBlock = api.World.Blocks[southChunk.UnpackAndReadBlock(MapUtil.Index3d(localX, localY, southZ, ChunkSize, ChunkSize), 3)];
+            westChunk.Unpack_ReadOnly();
+            eastChunk.Unpack_ReadOnly();
+            northChunk.Unpack_ReadOnly();
+            southChunk.Unpack_ReadOnly();
+
+            Block westBlock = api.World.Blocks[ReadBlockId(westChunk, westX, localY, localZ)];
+            Block eastBlock = api.World.Blocks[ReadBlockId(eastChunk, eastX, localY, localZ)];
+            Block northBlock = api.World.Blocks[ReadBlockId(northChunk, localX, localY, northZ)];
+            Block southBlock = api.World.Blocks[ReadBlockId(southChunk, localX, localY, southZ)];
 
             if (IsLake(westBlock) && IsLake(eastBlock) && IsLake(northBlock) && IsLake(southBlock))
             {
@@ -1290,6 +1371,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private void ClearChunkScratch()
     {
         Array.Clear(chunksTmp, 0, chunksTmp.Length);
+    }
+
+    private static int ReadBlockId(IWorldChunk chunk, int localX, int localY, int localZ)
+    {
+        return chunk.Data.GetBlockId(ChunkIndex3d(localX, localY, localZ), 3);
     }
 
     private bool IsValidTile(FastVec2i coord)
@@ -1319,6 +1405,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
     {
         int result = value % divisor;
         return result < 0 ? result + divisor : result;
+    }
+
+    private static int ChunkIndex3d(int x, int y, int z)
+    {
+        return (y * ChunkSize + z) * ChunkSize + x;
     }
 
     private static void CopyTileIntoPage(int[] tilePixels, int[] pagePixels, int localChunkX, int localChunkZ)

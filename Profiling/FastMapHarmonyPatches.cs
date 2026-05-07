@@ -3,6 +3,7 @@ using System.Linq;
 using System.Reflection;
 using HarmonyLib;
 using Vintagestory.API.Common;
+using Vintagestory.API.Server;
 
 namespace FastMap.Profiling;
 
@@ -22,6 +23,7 @@ internal static class FastMapHarmonyPatches
             }
 
             Harmony harmony = new(HarmonyId);
+            Patch(logger, harmony, "Vintagestory.Server.ServerEventAPI", "ChunkColumnGeneration", typeof(ServerRegisterChunkColumnGenerationPatch), parameterCount: 3);
             Patch(logger, harmony, "Vintagestory.Server.ServerMain", "LoadChunkColumn", typeof(ServerMainLoadChunkColumnPatch), parameterCount: 3);
             Patch(logger, harmony, "Vintagestory.Server.ServerMain", "LoadChunkColumnFast", typeof(ServerMainLoadChunkColumnFastPatch), parameterCount: 3);
             Patch(logger, harmony, "Vintagestory.Server.ServerSystemSupplyChunks", "loadOrGenerateChunkColumn_OnChunkThread", typeof(ServerSupplyStepPatch));
@@ -148,7 +150,7 @@ internal static class FastMapHarmonyPatches
         {
             int x = __args.Length > 0 && __args[0] is int ix ? ix : 0;
             int z = __args.Length > 1 && __args[1] is int iz ? iz : 0;
-            FastMapProfileRecorder.RecordServer("server_enqueue_fast_column", x, 0, z);
+            FastMapProfileRecorder.RecordServer("server_enqueue_fast_column", x, 0, z, kind: "event", category: "server_queue");
         }
     }
 
@@ -159,7 +161,7 @@ internal static class FastMapHarmonyPatches
             int x = __args.Length > 0 && __args[0] is int ix ? ix : 0;
             int z = __args.Length > 1 && __args[1] is int iz ? iz : 0;
             bool keepLoaded = __args.Length > 2 && __args[2] is bool value && value;
-            FastMapProfileRecorder.RecordServer("server_enqueue_slow_column", x, 0, z, detail: keepLoaded ? "keepLoaded" : string.Empty);
+            FastMapProfileRecorder.RecordServer("server_enqueue_slow_column", x, 0, z, detail: keepLoaded ? "keepLoaded" : string.Empty, kind: "event", category: "server_queue");
         }
     }
 
@@ -173,7 +175,7 @@ internal static class FastMapHarmonyPatches
         public static void Postfix(object[] __args, long __state)
         {
             ChunkProfileInfo info = ChunkRequestInfo(__args.Length > 0 ? __args[0] : null);
-            FastMapProfileRecorder.RecordServer("server_supply_column_step", info.X, info.Y, info.Z, FastMapProfileRecorder.ElapsedMilliseconds(__state), detail: info.Detail);
+            FastMapProfileRecorder.RecordServer("server_supply_column_step", info.X, info.Y, info.Z, FastMapProfileRecorder.ElapsedMilliseconds(__state), detail: info.Detail, kind: "inclusive", category: "server_supply");
         }
     }
 
@@ -189,7 +191,7 @@ internal static class FastMapHarmonyPatches
             ChunkProfileInfo info = ChunkRequestInfo(__args.Length > 0 ? __args[0] : null);
             bool loaded = __result is Array loadedChunks && loadedChunks.Length > 0;
             string detail = string.IsNullOrEmpty(info.Detail) ? "loaded=" + loaded : info.Detail + ";loaded=" + loaded;
-            FastMapProfileRecorder.RecordServer("server_try_load_column", info.X, info.Y, info.Z, FastMapProfileRecorder.ElapsedMilliseconds(__state), detail: detail);
+            FastMapProfileRecorder.RecordServer("server_try_load_column", info.X, info.Y, info.Z, FastMapProfileRecorder.ElapsedMilliseconds(__state), detail: detail, category: "server_load");
         }
     }
 
@@ -203,7 +205,7 @@ internal static class FastMapHarmonyPatches
         public static void Postfix(object[] __args, long __state)
         {
             ChunkProfileInfo info = ChunkRequestInfo(__args.Length > 1 ? __args[1] : null);
-            FastMapProfileRecorder.RecordServer("server_generate_empty_column", info.X, info.Y, info.Z, FastMapProfileRecorder.ElapsedMilliseconds(__state), detail: info.Detail);
+            FastMapProfileRecorder.RecordServer("server_generate_empty_column", info.X, info.Y, info.Z, FastMapProfileRecorder.ElapsedMilliseconds(__state), detail: info.Detail, category: "server_generation");
         }
     }
 
@@ -222,7 +224,9 @@ internal static class FastMapHarmonyPatches
                 __state.Info.Y,
                 __state.Info.Z,
                 FastMapProfileRecorder.ElapsedMilliseconds(__state.StartTimestamp),
-                detail: __state.Info.Detail);
+                detail: __state.Info.Detail,
+                kind: "inclusive",
+                category: "worldgen_pass");
         }
     }
 
@@ -236,7 +240,7 @@ internal static class FastMapHarmonyPatches
         public static void Postfix(object[] __args, long __state)
         {
             ChunkProfileInfo info = ChunkRequestInfo(__args.Length > 0 ? __args[0] : null);
-            FastMapProfileRecorder.RecordServer("server_mainthread_load_column", info.X, info.Y, info.Z, FastMapProfileRecorder.ElapsedMilliseconds(__state), detail: info.Detail);
+            FastMapProfileRecorder.RecordServer("server_mainthread_load_column", info.X, info.Y, info.Z, FastMapProfileRecorder.ElapsedMilliseconds(__state), detail: info.Detail, category: "server_load");
         }
     }
 
@@ -250,7 +254,7 @@ internal static class FastMapHarmonyPatches
         public static void Postfix(object __result, long __state)
         {
             ChunkProfileInfo info = PacketChunkInfo(__result);
-            FastMapProfileRecorder.RecordServer("server_chunk_to_packet", info.X, info.Y, info.Z, FastMapProfileRecorder.ElapsedMilliseconds(__state), info.Bytes, info.Detail);
+            FastMapProfileRecorder.RecordServer("server_chunk_to_packet", info.X, info.Y, info.Z, FastMapProfileRecorder.ElapsedMilliseconds(__state), info.Bytes, info.Detail, category: "server_streaming");
         }
     }
 
@@ -264,9 +268,17 @@ internal static class FastMapHarmonyPatches
         public static void Postfix(object[] __args, long __state)
         {
             ChunkProfileInfo info = PacketChunkInfo(__args.Length > 0 ? __args[0] : null);
-            FastMapProfileRecorder.RecordClient("client_load_chunk_packet", info.X, info.Y, info.Z, FastMapProfileRecorder.ElapsedMilliseconds(__state), info.Bytes);
+            FastMapProfileRecorder.RecordClient("client_load_chunk_packet", info.X, info.Y, info.Z, FastMapProfileRecorder.ElapsedMilliseconds(__state), info.Bytes, category: "client_streaming");
         }
     }
 
     private readonly record struct TimedChunkProfileInfo(ChunkProfileInfo Info, long StartTimestamp);
+
+    private static class ServerRegisterChunkColumnGenerationPatch
+    {
+        public static void Prefix(ref ChunkColumnGenerationDelegate handler, EnumWorldGenPass pass, string worldType)
+        {
+            handler = FastMapWorldgenDelegateProfiler.Wrap(handler, pass, worldType);
+        }
+    }
 }
