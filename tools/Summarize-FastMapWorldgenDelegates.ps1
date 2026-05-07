@@ -1,8 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string]$Path,
-
-    [switch]$IncludeInclusive
+    [string]$Path
 )
 
 Add-Type -TypeDefinition @'
@@ -12,19 +10,17 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 
-public static class FastMapProfileSummary
+public static class FastMapWorldgenDelegateSummary
 {
     private sealed class Stat
     {
-        public string Stage = "";
-        public string Kind = "";
-        public string Category = "";
+        public string Detail = "";
         public int Count;
         public double TotalMs;
-        public long Bytes;
+        public List<double> Durations = new List<double>();
     }
 
-    public static string Summarize(string path, bool includeInclusive)
+    public static string Summarize(string path)
     {
         Dictionary<string, Stat> stats = new Dictionary<string, Stat>(StringComparer.Ordinal);
         using (StreamReader reader = new StreamReader(path))
@@ -38,72 +34,91 @@ public static class FastMapProfileSummary
             string[] columns = SplitCsvLine(header);
             int stageIndex = IndexOf(columns, "stage");
             int durationIndex = IndexOf(columns, "durationMs");
-            int bytesIndex = IndexOf(columns, "bytes");
-            int kindIndex = IndexOf(columns, "kind");
-            int categoryIndex = IndexOf(columns, "category");
+            int detailIndex = IndexOf(columns, "detail");
             string line;
             while ((line = reader.ReadLine()) != null)
             {
                 string[] parts = SplitCsvLine(line);
-                if (stageIndex < 0 || durationIndex < 0 || bytesIndex < 0 || parts.Length <= Math.Max(stageIndex, Math.Max(durationIndex, bytesIndex)))
+                if (parts.Length <= Math.Max(stageIndex, Math.Max(durationIndex, detailIndex)))
                 {
                     continue;
                 }
 
-                string kind = kindIndex >= 0 && kindIndex < parts.Length ? parts[kindIndex] : "exclusive";
-                if (!includeInclusive && string.Equals(kind, "inclusive", StringComparison.OrdinalIgnoreCase))
+                if (!string.Equals(parts[stageIndex], "server_worldgen_delegate", StringComparison.Ordinal))
                 {
                     continue;
                 }
 
-                string stage = parts[stageIndex];
-                string category = categoryIndex >= 0 && categoryIndex < parts.Length ? parts[categoryIndex] : "";
-                string key = stage + "|" + kind + "|" + category;
-                Stat stat;
-                if (!stats.TryGetValue(key, out stat))
-                {
-                    stat = new Stat { Stage = stage, Kind = kind, Category = category };
-                    stats[key] = stat;
-                }
-
+                string detail = parts[detailIndex];
                 double duration = 0;
                 double.TryParse(parts[durationIndex], NumberStyles.Float, CultureInfo.InvariantCulture, out duration);
-                long bytes = 0;
-                long.TryParse(parts[bytesIndex], NumberStyles.Integer, CultureInfo.InvariantCulture, out bytes);
+
+                Stat stat;
+                if (!stats.TryGetValue(detail, out stat))
+                {
+                    stat = new Stat { Detail = detail };
+                    stats[detail] = stat;
+                }
 
                 stat.Count++;
                 stat.TotalMs += duration;
-                stat.Bytes += bytes;
+                stat.Durations.Add(duration);
             }
         }
 
-        List<Stat> ordered = stats.Values.OrderByDescending(stat => stat.TotalMs).Take(40).ToList();
-        double totalMeasuredMs = stats.Values.Sum(stat => stat.TotalMs);
+        double totalMs = stats.Values.Sum(stat => stat.TotalMs);
+        List<Stat> ordered = stats.Values.OrderByDescending(stat => stat.TotalMs).ToList();
         if (ordered.Count == 0)
         {
-            return "No matching profiling rows found.";
+            return "No server_worldgen_delegate rows found.";
         }
 
         List<string> lines = new List<string>();
-        lines.Add("stage|kind|category|count|totalMs|sharePct|avgMs|bytes");
+        lines.Add("pass|handler|count|totalMs|sharePct|avgMs|p95Ms|p99Ms");
         foreach (Stat stat in ordered)
         {
+            stat.Durations.Sort();
             double average = stat.Count == 0 ? 0 : stat.TotalMs / stat.Count;
-            double share = totalMeasuredMs <= 0 ? 0 : 100.0 * stat.TotalMs / totalMeasuredMs;
+            double share = totalMs <= 0 ? 0 : 100.0 * stat.TotalMs / totalMs;
             lines.Add(string.Format(
                 CultureInfo.InvariantCulture,
-                "{0}|{1}|{2}|{3}|{4:F3}|{5:F2}|{6:F4}|{7}",
-                stat.Stage,
-                stat.Kind,
-                stat.Category,
+                "{0}|{1}|{2}|{3:F3}|{4:F2}|{5:F4}|{6:F4}|{7:F4}",
+                Extract(stat.Detail, "pass="),
+                Extract(stat.Detail, "handler="),
                 stat.Count,
                 stat.TotalMs,
                 share,
                 average,
-                stat.Bytes));
+                Percentile(stat.Durations, 0.95),
+                Percentile(stat.Durations, 0.99)));
         }
 
         return string.Join(Environment.NewLine, lines.ToArray());
+    }
+
+    private static double Percentile(List<double> values, double percentile)
+    {
+        if (values.Count == 0)
+        {
+            return 0;
+        }
+
+        int index = (int)Math.Ceiling(values.Count * percentile) - 1;
+        index = Math.Max(0, Math.Min(values.Count - 1, index));
+        return values[index];
+    }
+
+    private static string Extract(string detail, string key)
+    {
+        int start = detail.IndexOf(key, StringComparison.Ordinal);
+        if (start < 0)
+        {
+            return "";
+        }
+
+        start += key.Length;
+        int end = detail.IndexOf(';', start);
+        return end < 0 ? detail.Substring(start) : detail.Substring(start, end - start);
     }
 
     private static int IndexOf(string[] columns, string name)
@@ -156,6 +171,6 @@ public static class FastMapProfileSummary
 }
 '@
 
-[FastMapProfileSummary]::Summarize($Path, $IncludeInclusive.IsPresent) |
+[FastMapWorldgenDelegateSummary]::Summarize($Path) |
     ConvertFrom-Csv -Delimiter '|' |
     Format-Table -AutoSize

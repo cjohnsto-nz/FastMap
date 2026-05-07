@@ -42,6 +42,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private readonly object repairLock = new();
     private readonly Queue<FastVec2i> repairQueue = new();
     private readonly HashSet<FastVec2i> queuedRepairs = new();
+    private readonly Dictionary<FastVec2i, string> queuedRepairReasons = new();
     private readonly ConcurrentQueue<FastMapPagePatch> readyPatches = new();
     private readonly HashSet<FastVec2i> chunksKnownValid = new();
     private readonly object chunkValidityLock = new();
@@ -650,12 +651,12 @@ public sealed class FastPageMapLayer : RGBMapLayer
         {
             for (int dx = -1; dx <= 1; dx++)
             {
-                QueueChunkRepair(new FastVec2i(chunkCoord.X + dx, chunkCoord.Z + dz), force: true);
+                QueueChunkRepair(new FastVec2i(chunkCoord.X + dx, chunkCoord.Z + dz), force: true, reason: "chunkdirty");
             }
         }
     }
 
-    private void QueueChunkRepair(FastVec2i chunkCoord, bool force = false)
+    private void QueueChunkRepair(FastVec2i chunkCoord, bool force = false, string reason = "unknown")
     {
         if (disposed)
         {
@@ -682,12 +683,17 @@ public sealed class FastPageMapLayer : RGBMapLayer
             if (queuedRepairs.Add(chunkCoord))
             {
                 repairQueue.Enqueue(chunkCoord);
-                FastMapProfileRecorder.RecordClient("fastmap_chunk_repair_queued", chunkCoord.X, 0, chunkCoord.Y, detail: force ? "force" : "normal");
+                queuedRepairReasons[chunkCoord] = reason;
+                FastMapProfileRecorder.RecordClient("fastmap_chunk_repair_queued", chunkCoord.X, 0, chunkCoord.Y, detail: RepairDetail(reason, force));
+            }
+            else if (queuedRepairReasons.TryGetValue(chunkCoord, out string? existingReason) && !ReasonContains(existingReason, reason))
+            {
+                queuedRepairReasons[chunkCoord] = existingReason + "+" + reason;
             }
         }
     }
 
-    private bool TryDequeueRepair(out FastVec2i chunkCoord)
+    private bool TryDequeueRepair(out FastVec2i chunkCoord, out string reason)
     {
         lock (repairLock)
         {
@@ -695,11 +701,17 @@ public sealed class FastPageMapLayer : RGBMapLayer
             {
                 chunkCoord = repairQueue.Dequeue();
                 queuedRepairs.Remove(chunkCoord);
+                if (!queuedRepairReasons.Remove(chunkCoord, out reason!))
+                {
+                    reason = "unknown";
+                }
+
                 return true;
             }
         }
 
         chunkCoord = default;
+        reason = "unknown";
         return false;
     }
 
@@ -710,13 +722,13 @@ public sealed class FastPageMapLayer : RGBMapLayer
             return;
         }
 
-        for (int i = 0; i < maxChunks && TryDequeueRepair(out FastVec2i chunkCoord); i++)
+        for (int i = 0; i < maxChunks && TryDequeueRepair(out FastVec2i chunkCoord, out string repairReason); i++)
         {
             IMapChunk mapChunk = api.World.BlockAccessor.GetMapChunk(chunkCoord.X, chunkCoord.Y);
             if (mapChunk == null)
             {
                 Interlocked.Increment(ref missingSourceChunks);
-                FastMapProfileRecorder.RecordClient("fastmap_chunk_repair_missing_mapchunk", chunkCoord.X, 0, chunkCoord.Y);
+                FastMapProfileRecorder.RecordClient("fastmap_chunk_repair_missing_mapchunk", chunkCoord.X, 0, chunkCoord.Y, detail: repairReason, category: "fastmap_repair");
                 continue;
             }
 
@@ -731,6 +743,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
                     0,
                     chunkCoord.Y,
                     FastMapProfileRecorder.ElapsedMilliseconds(repairStart),
+                    detail: repairReason,
                     kind: "inclusive",
                     category: "fastmap_repair");
                 continue;
@@ -751,6 +764,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 chunkCoord.Y,
                 FastMapProfileRecorder.ElapsedMilliseconds(repairStart),
                 pixels.Length * sizeof(int),
+                detail: repairReason,
                 kind: "inclusive",
                 category: "fastmap_repair");
         }
@@ -779,7 +793,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         {
             for (int dx = -radius; dx <= radius; dx++)
             {
-                QueueChunkRepair(new FastVec2i(centerX + dx, centerZ + dz));
+                QueueChunkRepair(new FastVec2i(centerX + dx, centerZ + dz), reason: "prewarm");
             }
         }
     }
@@ -1017,6 +1031,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         {
             repairQueue.Clear();
             queuedRepairs.Clear();
+            queuedRepairReasons.Clear();
         }
 
         while (readyPatches.TryDequeue(out _))
@@ -1405,6 +1420,25 @@ public sealed class FastPageMapLayer : RGBMapLayer
     {
         int result = value % divisor;
         return result < 0 ? result + divisor : result;
+    }
+
+    private static bool ReasonContains(string existingReasons, string reason)
+    {
+        string[] parts = existingReasons.Split('+');
+        for (int i = 0; i < parts.Length; i++)
+        {
+            if (parts[i] == reason)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string RepairDetail(string reason, bool force)
+    {
+        return reason + ";mode=" + (force ? "force" : "normal");
     }
 
     private static int ChunkIndex3d(int x, int y, int z)

@@ -85,13 +85,42 @@ Chunk data access:
 
 Status: In progress. Last updated: 2026-05-08.
 
+Newest proportional run:
+
+- Profile directory: `C:\Users\chris\AppData\Roaming\VintagestoryData\FastMap\profiles\4ee43fcf-03ad-42a2-a6bd-5ca56fc1f384`
+- Client profile: `fastmap-profile-client-20260507-124240.csv`
+- Server profile: `fastmap-profile-server-20260507-124233.csv`
+
+Client proportional shape:
+
+- `fastmap_generate_pixel_loop`: `90.09%` of measured non-inclusive client work, `0.7332 ms` average.
+- `fastmap_generate_color_multiply`: `3.23%`, `0.0263 ms` average.
+- `fastmap_page_upload`: `2.67%`, `0.3422 ms` average.
+- `client_load_chunk_packet`: `2.29%`, `0.0613 ms` average.
+- `fastmap_generate_blur`: `0.89%`, `0.0073 ms` average.
+- `fastmap_generate_prefetch_chunks`: `0.55%`, `0.0045 ms` average.
+
+Server proportional shape:
+
+- `server_worldgen_delegate`: `97.69%` of measured non-inclusive server work.
+- `server_mainthread_load_column`: `1.53%`.
+- `server_chunk_to_packet`: `0.70%`.
+- `server_generate_empty_column`: `0.04%`.
+- `server_try_load_column`: `0.03%`.
+
+Interpretation:
+
+- Direct chunk data reads appear to have improved `fastmap_generate_pixel_loop` average from the prior `0.8158 ms` to `0.7332 ms`, but this was not a repeatable benchmark.
+- Proportionally, the pixel loop remains the FastMap hotspot. The optimization helped, but did not change the architecture-level bottleneck.
+- Server-side work remains overwhelmingly worldgen delegate execution.
+
 - [x] Add basic client/server CSV profiling.
 - [x] Add server chunk supply, worldgen pass, chunk serialization, and client chunk packet timings.
 - [x] Add FastMap chunk image, repair, patch, upload, and save timings.
 - [x] Add `kind` and `category` fields so summaries can ignore inclusive wrapper stages.
 - [x] Add per-worldgen-generator timing by wrapping `ServerEventAPI.ChunkColumnGeneration(...)`.
 - [x] Add `GenerateChunkImage` substage timings for chunk prefetch, mapchunk fetch, pixel loop, blur, and final color multiply.
-- [ ] Add repair reason tracking: `prewarm`, `chunkdirty`, `viewport`, `manual`, `season-invalidated`.
+- [x] Add repair reason tracking for current sources: `prewarm`, `chunkdirty`, and combined duplicate reasons.
 
 Implemented on 2026-05-08:
 
@@ -100,6 +129,9 @@ Implemented on 2026-05-08:
 - `Profiling/FastMapWorldgenDelegateProfiler.cs` wraps registered `ChunkColumnGenerationDelegate` handlers and records `server_worldgen_delegate`.
 - `Map/FastPageMapLayer.cs` records `fastmap_generate_prefetch_chunks`, `fastmap_generate_fetch_mapchunks`, `fastmap_generate_pixel_loop`, `fastmap_generate_blur`, and `fastmap_generate_color_multiply`.
 - `tools/Summarize-FastMapProfile.ps1` now ignores inclusive wrapper rows by default and can include them with `-IncludeInclusive`.
+- `tools/Summarize-FastMapProfile.ps1` now includes `sharePct` so non-repeatable runs can be compared by proportional shape.
+- `tools/Summarize-FastMapWorldgenDelegates.ps1` reports worldgen delegate count, total, share, average, p95, and p99.
+- `Map/FastPageMapLayer.cs` now carries repair queue reasons through to missing/success rows.
 
 Measure after Phase 1:
 
@@ -125,10 +157,10 @@ Implemented on 2026-05-08:
 - `Map/FastPageMapLayer.cs` now reads top blocks with `chunk.Data.GetBlockId(...)` through `ReadBlockId(...)` instead of `UnpackAndReadBlock(...)` per pixel.
 - `fastmap_chunk_repair_generated` and `fastmap_chunk_repair_missing_source` are now marked `kind=inclusive`.
 
-Needs validation:
+Validation notes:
 
-- Re-run client profiling and compare `fastmap_generate_pixel_loop` against the `0a9f599b-89ef-4855-9dfb-ed4d08796f07` baseline.
-- Watch for correctness issues around water edges and unloaded neighbor chunks.
+- Profile `4ee43fcf-03ad-42a2-a6bd-5ca56fc1f384` showed `fastmap_generate_pixel_loop` at `0.7332 ms` average vs prior `0.8158 ms` average. Treat as directional because the run was not repeatable.
+- Still watch for correctness issues around water edges and unloaded neighbor chunks.
 
 Measurement target:
 
@@ -141,7 +173,7 @@ Measurement target:
 Status: In progress. Last updated: 2026-05-08.
 
 - [x] Rank vanilla and modded worldgen delegates by total time.
-- [ ] Add p95/p99 reporting by worldgen delegate.
+- [x] Add p95/p99 reporting by worldgen delegate.
 - [ ] Identify whether terrain, caves, vegetation, lighting, structures, or modded generators dominate.
 - [ ] Add output hashing for controlled chunk columns so optimization prototypes can prove exactness.
 
