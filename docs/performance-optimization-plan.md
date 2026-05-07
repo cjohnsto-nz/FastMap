@@ -87,32 +87,46 @@ Status: In progress. Last updated: 2026-05-08.
 
 Newest proportional run:
 
-- Profile directory: `C:\Users\chris\AppData\Roaming\VintagestoryData\FastMap\profiles\4ee43fcf-03ad-42a2-a6bd-5ca56fc1f384`
-- Client profile: `fastmap-profile-client-20260507-124240.csv`
-- Server profile: `fastmap-profile-server-20260507-124233.csv`
+- Profile directory: `C:\Users\chris\AppData\Roaming\VintagestoryData\FastMap\profiles\77d183ce-4c68-4d78-a3c2-ac79065d3404`
+- Client profile: `fastmap-profile-client-20260507-125056.csv`
+- Server profile: `fastmap-profile-server-20260507-125053.csv`
 
 Client proportional shape:
 
-- `fastmap_generate_pixel_loop`: `90.09%` of measured non-inclusive client work, `0.7332 ms` average.
-- `fastmap_generate_color_multiply`: `3.23%`, `0.0263 ms` average.
-- `fastmap_page_upload`: `2.67%`, `0.3422 ms` average.
-- `client_load_chunk_packet`: `2.29%`, `0.0613 ms` average.
-- `fastmap_generate_blur`: `0.89%`, `0.0073 ms` average.
-- `fastmap_generate_prefetch_chunks`: `0.55%`, `0.0045 ms` average.
+- `fastmap_generate_pixel_loop`: `86.12%` of measured non-inclusive client work, `0.8126 ms` average.
+- `fastmap_page_load`: `5.10%`, `12.7922 ms` average.
+- `fastmap_generate_color_multiply`: `2.94%`, `0.0278 ms` average.
+- `fastmap_page_upload`: `2.49%`, `0.3311 ms` average.
+- `client_load_chunk_packet`: `1.49%`, `0.0593 ms` average.
+- `fastmap_generate_blur`: `1.22%`, `0.0116 ms` average.
+- `fastmap_generate_prefetch_chunks`: `0.43%`, `0.0040 ms` average.
 
 Server proportional shape:
 
-- `server_worldgen_delegate`: `97.69%` of measured non-inclusive server work.
-- `server_mainthread_load_column`: `1.53%`.
-- `server_chunk_to_packet`: `0.70%`.
+- `server_worldgen_delegate`: `97.70%` of measured non-inclusive server work.
+- `server_mainthread_load_column`: `1.47%`.
+- `server_chunk_to_packet`: `0.73%`.
+- `server_try_load_column`: `0.06%`.
 - `server_generate_empty_column`: `0.04%`.
-- `server_try_load_column`: `0.03%`.
 
 Interpretation:
 
-- Direct chunk data reads appear to have improved `fastmap_generate_pixel_loop` average from the prior `0.8158 ms` to `0.7332 ms`, but this was not a repeatable benchmark.
+- Direct chunk data reads remain directionally plausible but are not proven by non-repeatable runs. The latest profile is back near the prior pixel-loop average.
 - Proportionally, the pixel loop remains the FastMap hotspot. The optimization helped, but did not change the architecture-level bottleneck.
 - Server-side work remains overwhelmingly worldgen delegate execution.
+
+Repair reason findings from the latest run:
+
+- `fastmap_chunk_repair_queued|chunkdirty;mode=force`: `48628`.
+- `fastmap_chunk_repair_generated|chunkdirty`: `45267`, `39444.036 ms`.
+- `fastmap_chunk_repair_queued|prewarm;mode=normal`: `27698`.
+- `fastmap_chunk_repair_missing_mapchunk|prewarm`: `27096`.
+- `fastmap_chunk_repair_missing_mapchunk|chunkdirty`: `1822`.
+
+Interpretation:
+
+- `chunkdirty` is the dominant source of successful map image generation.
+- `prewarm` is mostly trying chunks whose mapchunk is not available yet. This creates queue pressure without useful output.
 
 - [x] Add basic client/server CSV profiling.
 - [x] Add server chunk supply, worldgen pass, chunk serialization, and client chunk packet timings.
@@ -131,6 +145,7 @@ Implemented on 2026-05-08:
 - `tools/Summarize-FastMapProfile.ps1` now ignores inclusive wrapper rows by default and can include them with `-IncludeInclusive`.
 - `tools/Summarize-FastMapProfile.ps1` now includes `sharePct` so non-repeatable runs can be compared by proportional shape.
 - `tools/Summarize-FastMapWorldgenDelegates.ps1` reports worldgen delegate count, total, share, average, p95, and p99.
+- `tools/Summarize-FastMapRepairReasons.ps1` reports repair stages grouped by detail/reason.
 - `Map/FastPageMapLayer.cs` now carries repair queue reasons through to missing/success rows.
 
 Measure after Phase 1:
@@ -146,6 +161,7 @@ Measure after Phase 1:
 Status: In progress. Last updated: 2026-05-08.
 
 - [x] Prototype direct chunk data reads: call `Unpack_ReadOnly()` once per vertical chunk, then read from `chunk.Data` rather than `UnpackAndReadBlock()` per pixel.
+- [x] Make prewarm source-aware so it skips repair queueing when the source mapchunk is unavailable.
 - [ ] Add `FastMapSurfaceTile` cache containing `height[1024]`, `topBlockId[1024]`, and flags.
 - [ ] Split surface extraction from tile rendering so repeated map rendering can reuse surface data.
 - [ ] Prototype page-level generation instead of chunk-level generation.
@@ -156,10 +172,13 @@ Implemented on 2026-05-08:
 - `Map/FastPageMapLayer.cs` now pre-unpacks vertical chunks once in `GenerateChunkImage(...)`.
 - `Map/FastPageMapLayer.cs` now reads top blocks with `chunk.Data.GetBlockId(...)` through `ReadBlockId(...)` instead of `UnpackAndReadBlock(...)` per pixel.
 - `fastmap_chunk_repair_generated` and `fastmap_chunk_repair_missing_source` are now marked `kind=inclusive`.
+- `Map/FastPageMapLayer.cs` now skips prewarm repair queue entries whose mapchunk is unavailable and records `fastmap_chunk_repair_skipped_missing_mapchunk`.
 
 Validation notes:
 
 - Profile `4ee43fcf-03ad-42a2-a6bd-5ca56fc1f384` showed `fastmap_generate_pixel_loop` at `0.7332 ms` average vs prior `0.8158 ms` average. Treat as directional because the run was not repeatable.
+- Profile `77d183ce-4c68-4d78-a3c2-ac79065d3404` showed `fastmap_generate_pixel_loop` at `0.8126 ms` average, so the direct-read improvement is not conclusive from non-repeatable runs.
+- The next profile should check whether `fastmap_chunk_repair_missing_mapchunk|prewarm` has moved into `fastmap_chunk_repair_skipped_missing_mapchunk|prewarm` and whether successful prewarm generation remains useful.
 - Still watch for correctness issues around water edges and unloaded neighbor chunks.
 
 Measurement target:
