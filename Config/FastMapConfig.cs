@@ -25,6 +25,8 @@ public sealed class FastMapConfig
     public int PageFlushThreshold { get; set; } = 64;
     public bool LogStats { get; set; } = false;
     public float LogStatsIntervalSeconds { get; set; } = 5.0f;
+    public bool EnableProfiling { get; set; } = false;
+    public int ProfileAutoFlushIntervalSeconds { get; set; } = 5;
 
     public static FastMapConfig Load(ICoreAPI api)
     {
@@ -60,5 +62,6 @@ public sealed class FastMapConfig
         PageFlushIntervalSeconds = Math.Clamp(PageFlushIntervalSeconds, 0.5f, 120f);
         PageFlushThreshold = Math.Clamp(PageFlushThreshold, 1, 10000);
         LogStatsIntervalSeconds = Math.Clamp(LogStatsIntervalSeconds, 1f, 120f);
+        ProfileAutoFlushIntervalSeconds = Math.Clamp(ProfileAutoFlushIntervalSeconds, 1, 120);
     }
 }

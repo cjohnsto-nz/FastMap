@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Text;
 using FastMap.Config;
+using FastMap.Profiling;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
@@ -399,6 +400,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
             Interlocked.Increment(ref pageDiskHits);
             Interlocked.Add(ref pageLoadMs, stopwatch.ElapsedMilliseconds);
+            FastMapProfileRecorder.RecordClient("fastmap_page_disk_load", pageKey.X, 0, pageKey.Y, stopwatch.Elapsed.TotalMilliseconds, detail: "hit");
             readyPages.Enqueue(diskSnapshot);
             return;
         }
@@ -414,10 +416,13 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
             Interlocked.Increment(ref pageDbHits);
             Interlocked.Add(ref pageLoadMs, stopwatch.ElapsedMilliseconds);
+            FastMapProfileRecorder.RecordClient("fastmap_page_db_build", pageKey.X, 0, pageKey.Y, stopwatch.Elapsed.TotalMilliseconds, detail: "hit");
             QueuePageSave(dbSnapshot);
             readyPages.Enqueue(dbSnapshot);
             return;
         }
+
+        FastMapProfileRecorder.RecordClient("fastmap_page_load", pageKey.X, 0, pageKey.Y, stopwatch.Elapsed.TotalMilliseconds, detail: "miss");
 
         Interlocked.Increment(ref pageDbMisses);
         Interlocked.Add(ref pageLoadMs, stopwatch.ElapsedMilliseconds);
@@ -521,6 +526,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
             FastVec2i pageKey = PageKey(patch.ChunkCoord);
             FastMapPageComponent page = GetOrCreatePage(pageKey);
+            long patchStart = FastMapProfileRecorder.Timestamp();
             if (!page.HasAnyValidChunks && pageDiskCache.TryLoad(pageKey, out FastMapPageSnapshot snapshot))
             {
                 page.ApplySnapshot(snapshot);
@@ -535,6 +541,13 @@ public sealed class FastPageMapLayer : RGBMapLayer
             }
             pagesToSave.Add(pageKey);
             QueuePageUpload(pageKey);
+            FastMapProfileRecorder.RecordClient(
+                "fastmap_patch_apply",
+                patch.ChunkCoord.X,
+                0,
+                patch.ChunkCoord.Y,
+                FastMapProfileRecorder.ElapsedMilliseconds(patchStart),
+                patch.Pixels.Length * sizeof(int));
             processed++;
         }
 
@@ -612,6 +625,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         page.LastTouchedMs = capi.ElapsedMilliseconds;
         Interlocked.Increment(ref pageUploads);
         Interlocked.Add(ref pageUploadMs, stopwatch.ElapsedMilliseconds);
+        FastMapProfileRecorder.RecordClient("fastmap_page_upload", page.PageKey.X, 0, page.PageKey.Y, stopwatch.Elapsed.TotalMilliseconds);
     }
 
     private FastMapPageComponent GetOrCreatePage(FastVec2i pageKey)
@@ -668,6 +682,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
             if (queuedRepairs.Add(chunkCoord))
             {
                 repairQueue.Enqueue(chunkCoord);
+                FastMapProfileRecorder.RecordClient("fastmap_chunk_repair_queued", chunkCoord.X, 0, chunkCoord.Y, detail: force ? "force" : "normal");
             }
         }
     }
@@ -701,13 +716,21 @@ public sealed class FastPageMapLayer : RGBMapLayer
             if (mapChunk == null)
             {
                 Interlocked.Increment(ref missingSourceChunks);
+                FastMapProfileRecorder.RecordClient("fastmap_chunk_repair_missing_mapchunk", chunkCoord.X, 0, chunkCoord.Y);
                 continue;
             }
 
+            long repairStart = FastMapProfileRecorder.Timestamp();
             int[]? pixels = GenerateChunkImage(chunkCoord, mapChunk);
             if (pixels == null)
             {
                 Interlocked.Increment(ref missingSourceChunks);
+                FastMapProfileRecorder.RecordClient(
+                    "fastmap_chunk_repair_missing_source",
+                    chunkCoord.X,
+                    0,
+                    chunkCoord.Y,
+                    FastMapProfileRecorder.ElapsedMilliseconds(repairStart));
                 continue;
             }
 
@@ -719,6 +742,13 @@ public sealed class FastPageMapLayer : RGBMapLayer
             Interlocked.Increment(ref generatedChunks);
             readyPatches.Enqueue(new FastMapPagePatch(chunkCoord, pixels));
             QueueTileSave(chunkCoord, pixels);
+            FastMapProfileRecorder.RecordClient(
+                "fastmap_chunk_repair_generated",
+                chunkCoord.X,
+                0,
+                chunkCoord.Y,
+                FastMapProfileRecorder.ElapsedMilliseconds(repairStart),
+                pixels.Length * sizeof(int));
         }
     }
 
@@ -847,6 +877,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
             {
                 pageDiskCache.Save(snapshot);
                 Interlocked.Increment(ref pageSaves);
+                FastMapProfileRecorder.RecordClient("fastmap_page_save", snapshot.PageKey.X, 0, snapshot.PageKey.Y);
             }
             catch (Exception ex)
             {
@@ -862,6 +893,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 try
                 {
                     mapdb.SetMapPieces(tilesToSave);
+                    FastMapProfileRecorder.RecordClient("fastmap_tile_db_save", 0, 0, 0, bytes: tilesToSave.Count, detail: "tileCount");
                 }
                 catch (Exception ex)
                 {
@@ -1035,6 +1067,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private int[]? GenerateChunkImage(FastVec2i chunkPos, IMapChunk mapChunk)
     {
         Stopwatch stopwatch = Stopwatch.StartNew();
+        bool success = false;
         try
         {
             for (int cy = 0; cy < chunksTmp.Length; cy++)
@@ -1120,11 +1153,20 @@ public sealed class FastPageMapLayer : RGBMapLayer
             }
 
             ClearChunkScratch();
+            success = true;
             return pixels;
         }
         finally
         {
             Interlocked.Add(ref generationMs, stopwatch.ElapsedMilliseconds);
+            FastMapProfileRecorder.RecordClient(
+                "fastmap_generate_chunk_image",
+                chunkPos.X,
+                0,
+                chunkPos.Y,
+                stopwatch.Elapsed.TotalMilliseconds,
+                success ? TilePixelCount * sizeof(int) : 0,
+                success ? "success" : "missing_source");
         }
     }
 
