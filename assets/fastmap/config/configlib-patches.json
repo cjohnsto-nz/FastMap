@@ -104,6 +104,83 @@
     },
     {
       "type": "separator",
+      "title": "Page Sync"
+    },
+    {
+      "code": "EnablePageSync",
+      "type": "boolean",
+      "default": true,
+      "clientSide": false,
+      "ingui": "Enable page sync",
+      "comment": "Allow FastMap to upload generated page caches to the server and download selected players' shared pages."
+    },
+    {
+      "code": "PageSyncMaxUploadsPerTick",
+      "type": "integer",
+      "default": 1,
+      "clientSide": true,
+      "ingui": "Sync uploads per tick",
+      "comment": "Maximum local FastMap pages compressed and uploaded to the server per client tick.",
+      "range": {
+        "min": 1,
+        "max": 16,
+        "step": 1
+      }
+    },
+    {
+      "code": "PageSyncMaxRequestPacketsPerTick",
+      "type": "integer",
+      "default": 1,
+      "clientSide": true,
+      "ingui": "Sync request packets per tick",
+      "comment": "Maximum page-sync request packets sent by the client per tick while the map is asking for shared pages.",
+      "range": {
+        "min": 1,
+        "max": 16,
+        "step": 1
+      }
+    },
+    {
+      "code": "PageSyncMaxPagesPerRequest",
+      "type": "integer",
+      "default": 64,
+      "clientSide": false,
+      "ingui": "Sync pages per request",
+      "comment": "Maximum page keys included in one page-sync request packet.",
+      "range": {
+        "min": 1,
+        "max": 512,
+        "step": 1
+      }
+    },
+    {
+      "code": "PageSyncMaxDownloadsPerRequest",
+      "type": "integer",
+      "default": 4,
+      "clientSide": false,
+      "ingui": "Sync downloads per request",
+      "comment": "Maximum shared page payloads the server sends in response to one request packet.",
+      "range": {
+        "min": 1,
+        "max": 64,
+        "step": 1
+      }
+    },
+    {
+      "code": "PageSyncMaxDownloadsPerTick",
+      "type": "integer",
+      "default": 2,
+      "clientSide": true,
+      "ingui": "Apply synced pages per tick",
+      "comment": "Maximum received shared pages merged into the local FastMap cache per client tick.",
+      "range": {
+        "min": 1,
+        "max": 32,
+        "step": 1
+      }
+    },
+    {
+      "type": "separator",
       "title": "Performance"
     },
     {

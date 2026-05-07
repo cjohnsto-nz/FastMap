@@ -14,6 +14,11 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="_tmp*.cs" />
+    <None Include="_tmp*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Reference Include="VintagestoryAPI.dll">
       <HintPath>$(GamePath)\VintagestoryAPI.dll</HintPath>
       <Private>false</Private>

@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Text;
 using FastMap.Config;
+using FastMap.PageSync;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
@@ -24,6 +25,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private readonly ICoreClientAPI capi;
     private readonly FastMapConfig config;
     private readonly FastMapPageDiskCache pageDiskCache;
+    private readonly FastMapPageSyncClient? pageSyncClient;
     private readonly FastMapTextureAtlas? textureAtlas;
     private readonly Dictionary<FastVec2i, FastMapPageComponent> pages = new();
     private readonly HashSet<FastVec2i> visibleChunks = new();
@@ -31,6 +33,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private readonly Queue<FastVec2i> pageUploadQueue = new();
     private readonly HashSet<FastVec2i> queuedPageUploads = new();
     private readonly HashSet<FastVec2i> pagesNeedingUpload = new();
+    private readonly HashSet<FastVec2i> pagesWithSyncedData = new();
 
     private readonly object pageLoadLock = new();
     private readonly Queue<FastVec2i> pageLoadQueue = new();
@@ -99,7 +102,9 @@ public sealed class FastPageMapLayer : RGBMapLayer
         : base(api, mapSink)
     {
         capi = (ICoreClientAPI)api;
-        config = FastMapModSystem.Instance?.Config ?? new FastMapConfig();
+        FastMapModSystem? modSystem = api.ModLoader.GetModSystem<FastMapModSystem>();
+        config = modSystem?.Config ?? new FastMapConfig();
+        pageSyncClient = modSystem?.PageSyncClient;
         config.Normalize();
         pageDiskCache = new FastMapPageDiskCache(api.World.SavegameIdentifier, config.EnableCompressedCache, config.UseFilteredCache, config.UseHighCompressionCache);
         textureAtlas = config.EnableTextureAtlas ? new FastMapTextureAtlas(capi) : null;
@@ -179,8 +184,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         Stopwatch stopwatch = Stopwatch.StartNew();
         ProcessReadyPages(stopwatch);
+        ProcessReadySyncedPages(stopwatch);
         ProcessReadyPatches(stopwatch);
         ProcessQueuedPageUploads(stopwatch);
+        pageSyncClient?.RequestPages(visiblePageKeys);
+        pageSyncClient?.OnClientTick();
         PrewarmAroundPlayer(dt);
         EvictPages(dt);
         LogStats(dt);
@@ -231,6 +239,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         disposed = true;
         api.Event.ChunkDirty -= OnChunkDirty;
+
         FlushPendingSaves();
         mapdb?.Dispose();
         mapdb = null;
@@ -310,6 +319,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 QueuePageUpload(pageKey);
             }
         }
+
+        pageSyncClient?.RequestPages(visiblePageKeys);
     }
 
     private void QueuePageLoad(FastVec2i pageKey)
@@ -415,6 +426,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
             Interlocked.Increment(ref pageDbHits);
             Interlocked.Add(ref pageLoadMs, stopwatch.ElapsedMilliseconds);
             QueuePageSave(dbSnapshot);
+            QueuePageSyncUpload(dbSnapshot);
             readyPages.Enqueue(dbSnapshot);
             return;
         }
@@ -542,7 +554,56 @@ public sealed class FastPageMapLayer : RGBMapLayer
         {
             if (pages.TryGetValue(pageKey, out FastMapPageComponent? page))
             {
-                QueuePageSave(page.CreateSnapshot());
+                FastMapPageSnapshot snapshot = page.CreateSnapshot();
+                QueuePageSave(snapshot);
+                QueuePageSyncUpload(snapshot);
+            }
+        }
+    }
+
+    private void ProcessReadySyncedPages(Stopwatch frameStopwatch)
+    {
+        if (disposed || pageSyncClient == null)
+        {
+            return;
+        }
+
+        int count = Math.Min(config.PageSyncMaxDownloadsPerTick, config.MaxPageUploadsPerTick);
+        for (int i = 0; i < count; i++)
+        {
+            if (frameStopwatch.ElapsedMilliseconds >= config.MainThreadUploadBudgetMilliseconds)
+            {
+                break;
+            }
+
+            if (!pageSyncClient.TryDequeueReceivedPage(out FastMapPageSnapshot? snapshot))
+            {
+                break;
+            }
+
+            FastMapPageComponent page = GetOrCreatePage(snapshot.PageKey);
+            if (!page.HasAnyValidChunks && pageDiskCache.TryLoad(snapshot.PageKey, out FastMapPageSnapshot diskSnapshot))
+            {
+                page.ApplySnapshot(diskSnapshot);
+                MarkSnapshotChunksKnown(diskSnapshot);
+            }
+
+            page.MergeSnapshot(snapshot);
+            MarkSnapshotChunksKnown(snapshot);
+            pagesWithSyncedData.Add(snapshot.PageKey);
+
+            lock (pageLoadLock)
+            {
+                knownMissingPages.Remove(snapshot.PageKey);
+                queuedPageLoads.Remove(snapshot.PageKey);
+            }
+
+            FastMapPageSnapshot mergedSnapshot = page.CreateSnapshot();
+            QueuePageSave(mergedSnapshot);
+
+            if (visiblePageKeys.Contains(snapshot.PageKey))
+            {
+                QueuePageUpload(snapshot.PageKey);
             }
         }
     }
@@ -808,6 +869,16 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
     }
 
+    private void QueuePageSyncUpload(FastMapPageSnapshot snapshot)
+    {
+        if (pagesWithSyncedData.Contains(snapshot.PageKey))
+        {
+            return;
+        }
+
+        pageSyncClient?.QueueUpload(snapshot);
+    }
+
     private void QueueTileSave(FastVec2i chunkCoord, int[] pixels)
     {
         if (disposed)
@@ -990,6 +1061,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         pageUploadQueue.Clear();
         queuedPageUploads.Clear();
         pagesNeedingUpload.Clear();
+        pagesWithSyncedData.Clear();
 
         lock (pageSaveLock)
         {

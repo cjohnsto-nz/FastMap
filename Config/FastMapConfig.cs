@@ -15,6 +15,12 @@ public sealed class FastMapConfig
     public int PrewarmRadiusChunks { get; set; } = 16;
     public bool EnablePrewarm { get; set; } = true;
     public bool RegenerateOnChunkDirty { get; set; } = true;
+    public bool EnablePageSync { get; set; } = true;
+    public int PageSyncMaxUploadsPerTick { get; set; } = 1;
+    public int PageSyncMaxRequestPacketsPerTick { get; set; } = 1;
+    public int PageSyncMaxPagesPerRequest { get; set; } = 64;
+    public int PageSyncMaxDownloadsPerRequest { get; set; } = 4;
+    public int PageSyncMaxDownloadsPerTick { get; set; } = 2;
     public int MaxBackgroundTilesPerPass { get; set; } = 256;
     public int MaxPageUploadsPerTick { get; set; } = 2;
     public int MaxParallelPageLoads { get; set; } = 4;
@@ -51,6 +57,11 @@ public sealed class FastMapConfig
         PageTextureBudget = Math.Clamp(PageTextureBudget, 16, 10000);
         ViewportLoadScale = Math.Clamp(ViewportLoadScale, 1.0f, 4.0f);
         PrewarmRadiusChunks = Math.Clamp(PrewarmRadiusChunks, 0, 64);
+        PageSyncMaxUploadsPerTick = Math.Clamp(PageSyncMaxUploadsPerTick, 1, 16);
+        PageSyncMaxRequestPacketsPerTick = Math.Clamp(PageSyncMaxRequestPacketsPerTick, 1, 16);
+        PageSyncMaxPagesPerRequest = Math.Clamp(PageSyncMaxPagesPerRequest, 1, 512);
+        PageSyncMaxDownloadsPerRequest = Math.Clamp(PageSyncMaxDownloadsPerRequest, 1, 64);
+        PageSyncMaxDownloadsPerTick = Math.Clamp(PageSyncMaxDownloadsPerTick, 1, 32);
         MaxBackgroundTilesPerPass = Math.Clamp(MaxBackgroundTilesPerPass, 1, 1000);
         MaxPageUploadsPerTick = Math.Clamp(MaxPageUploadsPerTick, 1, 32);
         MaxParallelPageLoads = Math.Clamp(MaxParallelPageLoads, 1, 32);

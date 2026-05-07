@@ -71,6 +71,12 @@ internal sealed class FastMapPageComponent : MapComponent
         visibleChunksMeshDirty = true;
     }
 
+    public void MergeSnapshot(FastMapPageSnapshot snapshot)
+    {
+        FastMapPageSnapshot merged = CreateSnapshot().Merge(snapshot);
+        ApplySnapshot(merged);
+    }
+
     public void SetChunk(FastVec2i chunkCoord, int[] tilePixels)
     {
         int localChunkX = chunkCoord.X - BaseChunkCoord.X;
