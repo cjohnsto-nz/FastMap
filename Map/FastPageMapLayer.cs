@@ -21,6 +21,15 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private const int ChunkSize = FastMapPageComponent.ChunkSize;
     private const int ChunksPerPage = FastMapPageComponent.ChunksPerPage;
     private const int TilePixelCount = ChunkSize * ChunkSize;
+    private static readonly FastVec2i[] MinimalDirtyRepairOffsets =
+    {
+        new(0, 0),
+        new(-1, 0),
+        new(1, 0),
+        new(0, -1),
+        new(0, 1),
+        new(1, 1)
+    };
 
     private readonly ICoreClientAPI capi;
     private readonly FastMapConfig config;
@@ -41,8 +50,10 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private readonly object repairLock = new();
     private readonly Queue<FastVec2i> repairQueue = new();
+    private readonly SortedDictionary<long, Queue<FastVec2i>> delayedRepairQueue = new();
     private readonly HashSet<FastVec2i> queuedRepairs = new();
     private readonly Dictionary<FastVec2i, string> queuedRepairReasons = new();
+    private readonly Dictionary<FastVec2i, long> queuedRepairDueMs = new();
     private readonly ConcurrentQueue<FastMapPagePatch> readyPatches = new();
     private readonly HashSet<FastVec2i> chunksKnownValid = new();
     private readonly object chunkValidityLock = new();
@@ -56,6 +67,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private IWorldChunk[] chunksTmp = Array.Empty<IWorldChunk>();
     private Dictionary<string, int> colorsByCode = new();
     private int[] blockColorByBlockId = Array.Empty<int>();
+    private bool[] blockIsLakeByBlockId = Array.Empty<bool>();
+    private bool[] blockIsSnowByBlockId = Array.Empty<bool>();
     private bool colorAccurate;
     private float colorRandomizationWeight = 0.6f;
     private float workerAccum;
@@ -250,6 +263,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
         chunksKnownValid.Clear();
         colorsByCode.Clear();
         blockColorByBlockId = Array.Empty<int>();
+        blockIsLakeByBlockId = Array.Empty<bool>();
+        blockIsSnowByBlockId = Array.Empty<bool>();
         chunksTmp = Array.Empty<IWorldChunk>();
     }
 
@@ -647,11 +662,22 @@ public sealed class FastPageMapLayer : RGBMapLayer
             return;
         }
 
+        if (config.UseMinimalChunkDirtyRepairFanout)
+        {
+            for (int i = 0; i < MinimalDirtyRepairOffsets.Length; i++)
+            {
+                FastVec2i offset = MinimalDirtyRepairOffsets[i];
+                QueueChunkRepair(new FastVec2i(chunkCoord.X + offset.X, chunkCoord.Z + offset.Y), force: true, reason: "chunkdirty");
+            }
+
+            return;
+        }
+
         for (int dz = -1; dz <= 1; dz++)
         {
             for (int dx = -1; dx <= 1; dx++)
             {
-                QueueChunkRepair(new FastVec2i(chunkCoord.X + dx, chunkCoord.Z + dz), force: true, reason: "chunkdirty");
+                QueueChunkRepair(new FastVec2i(chunkCoord.X + dx, chunkCoord.Z + dz), force: true, reason: "chunkdirty-legacy3x3");
             }
         }
     }
@@ -680,32 +706,48 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         lock (repairLock)
         {
+            long dueMs = GetRepairDueMs(reason);
             if (queuedRepairs.Add(chunkCoord))
             {
-                repairQueue.Enqueue(chunkCoord);
                 queuedRepairReasons[chunkCoord] = reason;
+                queuedRepairDueMs[chunkCoord] = dueMs;
+                EnqueueRepairForDueTime(chunkCoord, dueMs);
                 FastMapProfileRecorder.RecordClient("fastmap_chunk_repair_queued", chunkCoord.X, 0, chunkCoord.Y, detail: RepairDetail(reason, force), kind: "event", category: "fastmap_repair");
             }
-            else if (queuedRepairReasons.TryGetValue(chunkCoord, out string? existingReason) && !ReasonContains(existingReason, reason))
+            else
             {
-                queuedRepairReasons[chunkCoord] = existingReason + "+" + reason;
+                if (queuedRepairReasons.TryGetValue(chunkCoord, out string? existingReason) && !ReasonContains(existingReason, reason))
+                {
+                    queuedRepairReasons[chunkCoord] = existingReason + "+" + reason;
+                }
+
+                if (!queuedRepairDueMs.ContainsKey(chunkCoord))
+                {
+                    queuedRepairDueMs[chunkCoord] = dueMs;
+                }
             }
         }
     }
 
     private bool TryDequeueRepair(out FastVec2i chunkCoord, out string reason)
     {
+        long nowMs = capi.ElapsedMilliseconds;
+
         lock (repairLock)
         {
+            MoveDueRepairsToReadyQueue(nowMs);
+
             if (repairQueue.Count > 0)
             {
-                chunkCoord = repairQueue.Dequeue();
-                queuedRepairs.Remove(chunkCoord);
-                if (!queuedRepairReasons.Remove(chunkCoord, out reason!))
+                FastVec2i candidate = repairQueue.Dequeue();
+                queuedRepairs.Remove(candidate);
+                queuedRepairDueMs.Remove(candidate);
+                if (!queuedRepairReasons.Remove(candidate, out reason!))
                 {
                     reason = "unknown";
                 }
 
+                chunkCoord = candidate;
                 return true;
             }
         }
@@ -713,6 +755,65 @@ public sealed class FastPageMapLayer : RGBMapLayer
         chunkCoord = default;
         reason = "unknown";
         return false;
+    }
+
+    private void EnqueueRepairForDueTime(FastVec2i chunkCoord, long dueMs)
+    {
+        if (dueMs <= capi.ElapsedMilliseconds)
+        {
+            repairQueue.Enqueue(chunkCoord);
+            return;
+        }
+
+        if (!delayedRepairQueue.TryGetValue(dueMs, out Queue<FastVec2i>? delayedAtTime))
+        {
+            delayedAtTime = new Queue<FastVec2i>();
+            delayedRepairQueue[dueMs] = delayedAtTime;
+        }
+
+        delayedAtTime.Enqueue(chunkCoord);
+    }
+
+    private void MoveDueRepairsToReadyQueue(long nowMs)
+    {
+        while (delayedRepairQueue.Count > 0)
+        {
+            KeyValuePair<long, Queue<FastVec2i>> first = FirstDelayedRepairBucket();
+            if (first.Key > nowMs)
+            {
+                return;
+            }
+
+            delayedRepairQueue.Remove(first.Key);
+            while (first.Value.Count > 0)
+            {
+                FastVec2i chunkCoord = first.Value.Dequeue();
+                if (queuedRepairDueMs.TryGetValue(chunkCoord, out long dueMs) && dueMs <= nowMs)
+                {
+                    repairQueue.Enqueue(chunkCoord);
+                }
+            }
+        }
+    }
+
+    private KeyValuePair<long, Queue<FastVec2i>> FirstDelayedRepairBucket()
+    {
+        foreach (KeyValuePair<long, Queue<FastVec2i>> entry in delayedRepairQueue)
+        {
+            return entry;
+        }
+
+        throw new InvalidOperationException("Delayed repair queue is empty.");
+    }
+
+    private long GetRepairDueMs(string reason)
+    {
+        if (!ReasonContains(reason, "chunkdirty"))
+        {
+            return capi.ElapsedMilliseconds;
+        }
+
+        return capi.ElapsedMilliseconds + config.ExperimentalChunkDirtyRepairDelayMilliseconds;
     }
 
     private void ProcessChunkRepairs(int maxChunks)
@@ -1037,8 +1138,10 @@ public sealed class FastPageMapLayer : RGBMapLayer
         lock (repairLock)
         {
             repairQueue.Clear();
+            delayedRepairQueue.Clear();
             queuedRepairs.Clear();
             queuedRepairReasons.Clear();
+            queuedRepairDueMs.Clear();
         }
 
         while (readyPatches.TryDequeue(out _))
@@ -1066,10 +1169,14 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         IList<Block> blocks = api.World.Blocks;
         blockColorByBlockId = new int[blocks.Count];
+        blockIsLakeByBlockId = new bool[blocks.Count];
+        blockIsSnowByBlockId = new bool[blocks.Count];
         for (int i = 0; i < blocks.Count; i++)
         {
             Block? block = blocks[i];
             string? colorCode = "land";
+            blockIsLakeByBlockId[i] = block != null && IsLake(block);
+            blockIsSnowByBlockId[i] = block?.BlockMaterial == EnumBlockMaterial.Snow;
 
             if (block?.Attributes != null)
             {
@@ -1171,37 +1278,32 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 int localZ = index / ChunkSize;
                 float shade = CalculateShade(mapChunk, northwestMapChunk, westMapChunk, northMapChunk, localX, localZ, height);
                 int blockId = ReadBlockId(chunksTmp[chunkY], localX, height % ChunkSize, localZ);
-                Block block = api.World.Blocks[blockId];
 
-                if (block.BlockMaterial == EnumBlockMaterial.Snow && !colorAccurate && height > 0)
+                if (IsSnow(blockId) && !colorAccurate && height > 0)
                 {
                     height--;
                     chunkY = height / ChunkSize;
                     if (chunkY >= 0 && chunkY < chunksTmp.Length)
                     {
                         blockId = ReadBlockId(chunksTmp[chunkY], localX, height % ChunkSize, localZ);
-                        block = api.World.Blocks[blockId];
                     }
                 }
 
-                blockPos.Set(ChunkSize * chunkPos.X + localX, height, ChunkSize * chunkPos.Y + localZ);
-
                 if (colorAccurate)
                 {
-                    int color = block.GetColor(capi, blockPos);
-                    int randomColor = block.GetRandomColor(capi, blockPos, BlockFacing.UP, GameMath.MurmurHash3Mod(blockPos.X, blockPos.Y, blockPos.Z, 30));
-                    randomColor = ((randomColor & 0xFF) << 16) | (((randomColor >> 8) & 0xFF) << 8) | ((randomColor >> 16) & 0xFF);
-                    pixels[index] = ColorUtil.ColorOverlay(color, randomColor, colorRandomizationWeight);
+                    Block block = api.World.Blocks[blockId];
+                    blockPos.Set(ChunkSize * chunkPos.X + localX, height, ChunkSize * chunkPos.Y + localZ);
+                    pixels[index] = GetColorAccurateMapColor(block, blockId, blockPos, chunkPos);
                     shadowMap[index] = (byte)Math.Clamp((int)(shadowMap[index] * shade), 0, 255);
                 }
-                else if (IsLake(block))
+                else if (IsLake(blockId))
                 {
-                    pixels[index] = GetLakeColor(chunkPos, chunkY, localX, localZ, height, block);
+                    pixels[index] = GetLakeColor(chunkPos, chunkY, localX, localZ, height, blockId);
                 }
                 else
                 {
                     shadowMap[index] = (byte)Math.Clamp((int)(shadowMap[index] * shade), 0, 255);
-                    pixels[index] = GetMapColor(block);
+                    pixels[index] = GetMapColor(blockId);
                 }
             }
             if (profile)
@@ -1268,6 +1370,36 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
     }
 
+    private int GetColorAccurateMapColor(Block block, int blockId, BlockPos blockPos, FastVec2i chunkPos)
+    {
+        try
+        {
+            int color = block.GetColor(capi, blockPos);
+            int randomColor = block.GetRandomColor(capi, blockPos, BlockFacing.UP, GameMath.MurmurHash3Mod(blockPos.X, blockPos.Y, blockPos.Z, 30));
+            randomColor = ((randomColor & 0xFF) << 16) | (((randomColor >> 8) & 0xFF) << 8) | ((randomColor >> 16) & 0xFF);
+            return ColorUtil.ColorOverlay(color, randomColor, colorRandomizationWeight);
+        }
+        catch (Exception ex)
+        {
+            FastMapProfileRecorder.RecordClient(
+                "fastmap_coloraccurate_fallback",
+                chunkPos.X,
+                blockPos.Y,
+                chunkPos.Y,
+                detail: block.Code?.ToShortString() ?? blockId.ToString(),
+                kind: "event",
+                category: "fastmap_image");
+            api.Logger.Warning(
+                "[FastMap] Falling back to cached map color for block {0} at {1}/{2}/{3}: {4}",
+                block.Code?.ToShortString() ?? blockId.ToString(),
+                blockPos.X,
+                blockPos.Y,
+                blockPos.Z,
+                ex.Message);
+            return GetMapColor(blockId);
+        }
+    }
+
     private float CalculateShade(IMapChunk center, IMapChunk northwest, IMapChunk west, IMapChunk north, int localX, int localZ, int height)
     {
         IMapChunk diagonal = center;
@@ -1318,7 +1450,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         return 1f;
     }
 
-    private int GetLakeColor(FastVec2i chunkPos, int chunkY, int localX, int localZ, int height, Block block)
+    private int GetLakeColor(FastVec2i chunkPos, int chunkY, int localX, int localZ, int height, int blockId)
     {
         IWorldChunk westChunk = chunksTmp[chunkY];
         IWorldChunk eastChunk = chunksTmp[chunkY];
@@ -1363,28 +1495,25 @@ public sealed class FastPageMapLayer : RGBMapLayer
             northChunk.Unpack_ReadOnly();
             southChunk.Unpack_ReadOnly();
 
-            Block westBlock = api.World.Blocks[ReadBlockId(westChunk, westX, localY, localZ)];
-            Block eastBlock = api.World.Blocks[ReadBlockId(eastChunk, eastX, localY, localZ)];
-            Block northBlock = api.World.Blocks[ReadBlockId(northChunk, localX, localY, northZ)];
-            Block southBlock = api.World.Blocks[ReadBlockId(southChunk, localX, localY, southZ)];
-
-            if (IsLake(westBlock) && IsLake(eastBlock) && IsLake(northBlock) && IsLake(southBlock))
+            if (IsLake(ReadBlockId(westChunk, westX, localY, localZ))
+                && IsLake(ReadBlockId(eastChunk, eastX, localY, localZ))
+                && IsLake(ReadBlockId(northChunk, localX, localY, northZ))
+                && IsLake(ReadBlockId(southChunk, localX, localY, southZ)))
             {
-                return GetMapColor(block);
+                return GetMapColor(blockId);
             }
 
             return colorsByCode["wateredge"];
         }
 
-        return GetMapColor(block);
+        return GetMapColor(blockId);
     }
 
-    private int GetMapColor(Block block)
+    private int GetMapColor(int blockId)
     {
-        int id = block.Id;
-        if (id >= 0 && id < blockColorByBlockId.Length)
+        if (blockId >= 0 && blockId < blockColorByBlockId.Length)
         {
-            return blockColorByBlockId[id];
+            return blockColorByBlockId[blockId];
         }
 
         return colorsByCode.TryGetValue("land", out int color) ? color : unchecked((int)0xFFAC8858);
@@ -1409,6 +1538,16 @@ public sealed class FastPageMapLayer : RGBMapLayer
     {
         return block.BlockMaterial == EnumBlockMaterial.Water
             || (block.BlockMaterial == EnumBlockMaterial.Ice && block.Code?.Path != "glacierice");
+    }
+
+    private bool IsLake(int blockId)
+    {
+        return blockId >= 0 && blockId < blockIsLakeByBlockId.Length && blockIsLakeByBlockId[blockId];
+    }
+
+    private bool IsSnow(int blockId)
+    {
+        return blockId >= 0 && blockId < blockIsSnowByBlockId.Length && blockIsSnowByBlockId[blockId];
     }
 
     private static FastVec2i PageKey(FastVec2i chunkCoord)

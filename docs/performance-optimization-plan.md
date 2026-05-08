@@ -12,20 +12,19 @@ The near-term focus is not seasonal maps specifically. The broader target is to 
 
 Latest useful run:
 
-- Profile directory: `C:\Users\chris\AppData\Roaming\VintagestoryData\FastMap\profiles\0a9f599b-89ef-4855-9dfb-ed4d08796f07`
-- Client profile: `fastmap-profile-client-20260507-123452.csv`
-- Server profile: `fastmap-profile-server-20260507-123448.csv`
+- Profile directory: `C:\Users\chris\AppData\Roaming\VintagestoryData\FastMap\profiles\446089a3-b518-4443-9e5e-c15b9a71da3b`
+- Client profile: `fastmap-profile-client-20260507-191047.csv`
+- Server profile: `fastmap-profile-server-20260507-191041.csv`
 
 Ranked leaf-ish stages from that run:
 
-- `server_worldgen_delegate`: about `51.8s` total across individual worldgen delegate calls.
-- `fastmap_generate_pixel_loop`: about `39.6s` total, now isolated as the dominant FastMap image substage.
-- `fastmap_generate_color_multiply`: about `1.35s` total.
-- `server_mainthread_load_column`: about `1.09s` total.
-- `fastmap_page_upload`: about `1.02s` total.
-- `client_load_chunk_packet`: about `0.66s` total.
-- `fastmap_generate_blur`: about `0.57s` total.
-- `server_chunk_to_packet`: about `0.43s` total.
+- `server_worldgen_delegate`: `97.82%` of measured non-inclusive server work.
+- `fastmap_generate_pixel_loop`: `90.02%` of measured non-inclusive client work.
+- `fastmap_generate_color_multiply`: `3.12%` of measured non-inclusive client work.
+- `fastmap_page_upload`: `2.90%` of measured non-inclusive client work.
+- `client_load_chunk_packet`: `2.33%` of measured non-inclusive client work.
+- `server_mainthread_load_column`: `1.35%` of measured non-inclusive server work.
+- `server_chunk_to_packet`: `0.78%` of measured non-inclusive server work.
 
 Important interpretation:
 
@@ -34,14 +33,14 @@ Important interpretation:
 
 Top server worldgen delegates in the latest run:
 
-- `Vintagestory.ServerMods.GenTerra.OnChunkColumnGen`: `12994.861 ms`, `2386` calls, `5.4463 ms` average.
-- `Vintagestory.ServerMods.GenLightSurvival.OnChunkColumnGeneration`: `12115.847 ms`, `1993` calls, `6.0792 ms` average.
-- `Vintagestory.ServerMods.GenDeposits.GenChunkColumn`: `6654.167 ms`, `2206` calls, `3.0164 ms` average.
-- `Vintagestory.ServerMods.GenPartial.GenChunkColumn`: `4210.208 ms`, `2387` calls, `1.7638 ms` average.
-- `Vintagestory.ServerMods.GenVegetationAndPatches.OnChunkColumnGen`: `3002.680 ms`, `1993` calls, `1.5066 ms` average.
-- `Vintagestory.ServerMods.GenBlockLayers.OnChunkColumnGeneration`: `2623.334 ms`, `2387` calls, `1.0990 ms` average.
-- `Vintagestory.ServerMods.GenRockStrataNew.GenChunkColumn`: `2258.349 ms`, `2387` calls, `0.9461 ms` average.
-- `Vintagestory.ServerMods.GenLightSurvival.OnChunkColumnGenerationFlood`: `2192.739 ms`, `1774` calls, `1.2360 ms` average.
+- `Vintagestory.ServerMods.GenTerra.OnChunkColumnGen`: `22.73%` of measured delegate work.
+- `Vintagestory.ServerMods.GenLightSurvival.OnChunkColumnGeneration`: `20.54%`.
+- `Vintagestory.ServerMods.GenDeposits.GenChunkColumn`: `13.37%`.
+- `Vintagestory.ServerMods.GenRockStrataNew.GenChunkColumn`: `10.54%`.
+- `Vintagestory.ServerMods.GenPartial.GenChunkColumn`: `8.74%`.
+- `Vintagestory.ServerMods.GenVegetationAndPatches.OnChunkColumnGen`: `5.23%`.
+- `Vintagestory.ServerMods.GenBlockLayers.OnChunkColumnGeneration`: `4.95%`.
+- `Vintagestory.ServerMods.GenStructures.OnChunkColumnGen`: `4.40%`.
 
 ## Code References
 
@@ -87,46 +86,53 @@ Status: In progress. Last updated: 2026-05-08.
 
 Newest proportional run:
 
-- Profile directory: `C:\Users\chris\AppData\Roaming\VintagestoryData\FastMap\profiles\77d183ce-4c68-4d78-a3c2-ac79065d3404`
-- Client profile: `fastmap-profile-client-20260507-125056.csv`
-- Server profile: `fastmap-profile-server-20260507-125053.csv`
+- Profile directory: `C:\Users\chris\AppData\Roaming\VintagestoryData\FastMap\profiles\446089a3-b518-4443-9e5e-c15b9a71da3b`
+- Client profile: `fastmap-profile-client-20260507-191047.csv`
+- Server profile: `fastmap-profile-server-20260507-191041.csv`
 
 Client proportional shape:
 
-- `fastmap_generate_pixel_loop`: `86.12%` of measured non-inclusive client work, `0.8126 ms` average.
-- `fastmap_page_load`: `5.10%`, `12.7922 ms` average.
-- `fastmap_generate_color_multiply`: `2.94%`, `0.0278 ms` average.
-- `fastmap_page_upload`: `2.49%`, `0.3311 ms` average.
-- `client_load_chunk_packet`: `1.49%`, `0.0593 ms` average.
-- `fastmap_generate_blur`: `1.22%`, `0.0116 ms` average.
-- `fastmap_generate_prefetch_chunks`: `0.43%`, `0.0040 ms` average.
+- `fastmap_generate_pixel_loop`: `90.02%` of measured non-inclusive client work, `0.7362 ms` average.
+- `fastmap_generate_color_multiply`: `3.12%`, `0.0255 ms` average.
+- `fastmap_page_upload`: `2.90%`, `0.2831 ms` average.
+- `client_load_chunk_packet`: `2.33%`, `0.0504 ms` average.
+- `fastmap_generate_blur`: `0.68%`, `0.0056 ms` average.
+- `fastmap_generate_prefetch_chunks`: `0.63%`, `0.0051 ms` average.
+- `fastmap_page_load`: `0.09%`, `6.1263 ms` average.
 
 Server proportional shape:
 
-- `server_worldgen_delegate`: `97.70%` of measured non-inclusive server work.
-- `server_mainthread_load_column`: `1.47%`.
-- `server_chunk_to_packet`: `0.73%`.
-- `server_try_load_column`: `0.06%`.
-- `server_generate_empty_column`: `0.04%`.
+- `server_worldgen_delegate`: `97.82%` of measured non-inclusive server work.
+- `server_mainthread_load_column`: `1.35%`.
+- `server_chunk_to_packet`: `0.78%`.
+- `server_generate_empty_column`: `0.03%`.
+- `server_try_load_column`: `0.02%`.
 
 Interpretation:
 
 - Direct chunk data reads remain directionally plausible but are not proven by non-repeatable runs. The latest profile is back near the prior pixel-loop average.
 - Proportionally, the pixel loop remains the FastMap hotspot. The optimization helped, but did not change the architecture-level bottleneck.
 - Server-side work remains overwhelmingly worldgen delegate execution.
+- The client generated `32457` tile images while receiving `12280` client chunk packets. That is about `2.64` generated tiles per streamed chunk packet.
+- The minimal fanout experiment now looks directionally useful after a second run, but the pixel loop remains the overwhelmingly dominant client cost.
 
 Repair reason findings from the latest run:
 
-- `fastmap_chunk_repair_queued|chunkdirty;mode=force`: `48628`.
-- `fastmap_chunk_repair_generated|chunkdirty`: `45267`, `39444.036 ms`.
-- `fastmap_chunk_repair_queued|prewarm;mode=normal`: `27698`.
-- `fastmap_chunk_repair_missing_mapchunk|prewarm`: `27096`.
-- `fastmap_chunk_repair_missing_mapchunk|chunkdirty`: `1822`.
+- `fastmap_chunk_repair_queued|chunkdirty;mode=force`: `32246`.
+- `fastmap_chunk_repair_generated|chunkdirty`: `31043`, `24621.495 ms`.
+- `fastmap_chunk_repair_skipped_missing_mapchunk|prewarm`: `22662`.
+- `fastmap_chunk_repair_queued|prewarm;mode=normal`: `906`.
+- `fastmap_chunk_repair_generated|prewarm`: `874`, `603.825 ms`.
+- `fastmap_chunk_repair_missing_mapchunk|chunkdirty`: `715`.
+- `fastmap_chunk_repair_generated|chunkdirty+prewarm`: `509`, `495.407 ms`.
 
 Interpretation:
 
 - `chunkdirty` is the dominant source of successful map image generation.
-- `prewarm` is mostly trying chunks whose mapchunk is not available yet. This creates queue pressure without useful output.
+- `prewarm` missing-mapchunk work is now being skipped before queueing, which validates the source-aware prewarm change.
+- `chunkdirty` remains the dominant source of successful map image generation and is now the best target for reducing redundant rasterization.
+- Normal continuous map generation returned after disabling the dirty debounce by default.
+- Minimal dirty fanout looks provisionally useful, but the next priority is per-tile image generation cost rather than further queue-neighborhood tuning.
 
 - [x] Add basic client/server CSV profiling.
 - [x] Add server chunk supply, worldgen pass, chunk serialization, and client chunk packet timings.
@@ -162,6 +168,9 @@ Status: In progress. Last updated: 2026-05-08.
 
 - [x] Prototype direct chunk data reads: call `Unpack_ReadOnly()` once per vertical chunk, then read from `chunk.Data` rather than `UnpackAndReadBlock()` per pixel.
 - [x] Make prewarm source-aware so it skips repair queueing when the source mapchunk is unavailable.
+- [x] Add a configurable dirty-repair debounce experiment so streaming bursts can coalesce before FastMap regenerates affected tiles.
+- [x] Add a minimal chunk-dirty repair fanout experiment: `6` renderer-derived affected tiles instead of legacy `3x3`.
+- [x] Optimize the normal non-color-accurate pixel loop with precomputed block-id flags and colors.
 - [ ] Add `FastMapSurfaceTile` cache containing `height[1024]`, `topBlockId[1024]`, and flags.
 - [ ] Split surface extraction from tile rendering so repeated map rendering can reuse surface data.
 - [ ] Prototype page-level generation instead of chunk-level generation.
@@ -173,12 +182,25 @@ Implemented on 2026-05-08:
 - `Map/FastPageMapLayer.cs` now reads top blocks with `chunk.Data.GetBlockId(...)` through `ReadBlockId(...)` instead of `UnpackAndReadBlock(...)` per pixel.
 - `fastmap_chunk_repair_generated` and `fastmap_chunk_repair_missing_source` are now marked `kind=inclusive`.
 - `Map/FastPageMapLayer.cs` now skips prewarm repair queue entries whose mapchunk is unavailable and records `fastmap_chunk_repair_skipped_missing_mapchunk`.
+- `Config/FastMapConfig.cs` now exposes `ExperimentalChunkDirtyRepairDelayMilliseconds`, default `0`.
+- `Map/FastPageMapLayer.cs` can delay `chunkdirty` repair entries by `ExperimentalChunkDirtyRepairDelayMilliseconds` for profiling only. The default is disabled because the `500 ms` experiment caused visible map starvation during fast flight.
+- `Config/FastMapConfig.cs` now exposes `UseMinimalChunkDirtyRepairFanout`, default `true`.
+- `Map/FastPageMapLayer.cs` now queues the dirty chunk itself plus west/east/north/south/southeast neighbors by default, instead of the legacy full `3x3` neighborhood. This matches the current renderer dependencies from `CalculateShade(...)` and `GetLakeColor(...)`.
+- `Map/FastPageMapLayer.cs` now builds `blockIsLakeByBlockId` and `blockIsSnowByBlockId` alongside `blockColorByBlockId`.
+- `Map/FastPageMapLayer.cs` now avoids per-pixel `Block` object lookups and `BlockPos.Set(...)` in the normal non-color-accurate path. The color-accurate path still uses vanilla `Block.GetColor(...)` and `Block.GetRandomColor(...)`.
 
 Validation notes:
 
 - Profile `4ee43fcf-03ad-42a2-a6bd-5ca56fc1f384` showed `fastmap_generate_pixel_loop` at `0.7332 ms` average vs prior `0.8158 ms` average. Treat as directional because the run was not repeatable.
 - Profile `77d183ce-4c68-4d78-a3c2-ac79065d3404` showed `fastmap_generate_pixel_loop` at `0.8126 ms` average, so the direct-read improvement is not conclusive from non-repeatable runs.
-- The next profile should check whether `fastmap_chunk_repair_missing_mapchunk|prewarm` has moved into `fastmap_chunk_repair_skipped_missing_mapchunk|prewarm` and whether successful prewarm generation remains useful.
+- Profile `ae03a890-78ca-4ea0-a710-90d3b67d2950` showed prewarm queue entries dropping from `27698` to `753`, with `23868` `fastmap_chunk_repair_skipped_missing_mapchunk|prewarm` events. The prewarm skip is working.
+- Profile `32e0f691-73b5-47dd-a8ec-ca18a369d6af` showed the dirty debounce experiment was not gameplay-acceptable: `14312` client chunk packets produced only `1308` generated map tiles, and map generation visibly lagged/discontinued. Treat this as a profiling-only negative result.
+- Profile `f5f2e6bb-8762-4a9b-9a14-93fa4a33d9dc` verified normal generation returned with the dirty debounce disabled: `8888` client chunk packets produced `31862` generated map tiles.
+- Profile `95bbc456-367e-4d20-b602-5c0d8b970714` tested `UseMinimalChunkDirtyRepairFanout=true`: `10192` client chunk packets produced `33215` generated map tiles. This is a modest ratio improvement over `f5f2e6bb`, but not the hoped-for one-third win.
+- Profile `446089a3-b518-4443-9e5e-c15b9a71da3b` strengthened the minimal fanout signal: `12280` client chunk packets produced `32457` generated map tiles, about `2.64x`.
+- The next profile should validate the precomputed block-id flag/color optimization. Watch `fastmap_generate_pixel_loop` average and generated tile count ratio together.
+- Next client-side diagnostic, if we stay here briefly: instrument raw `OnChunkDirty` event counts by chunk column and vertical chunk Y to prove whether repeated dirty waves are causing full tile regeneration after the queue already drained.
+- Decision point: after one dirty-event multiplicity diagnostic, move the main optimization effort to either `FastMapSurfaceTile` caching or server worldgen delegate optimization. Do not spend many more cycles on queue delay/fanout heuristics.
 - Still watch for correctness issues around water edges and unloaded neighbor chunks.
 
 Measurement target:

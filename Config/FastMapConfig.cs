@@ -15,6 +15,8 @@ public sealed class FastMapConfig
     public int PrewarmRadiusChunks { get; set; } = 16;
     public bool EnablePrewarm { get; set; } = true;
     public bool RegenerateOnChunkDirty { get; set; } = true;
+    public bool UseMinimalChunkDirtyRepairFanout { get; set; } = true;
+    public int ExperimentalChunkDirtyRepairDelayMilliseconds { get; set; } = 0;
     public int MaxBackgroundTilesPerPass { get; set; } = 256;
     public int MaxPageUploadsPerTick { get; set; } = 2;
     public int MaxParallelPageLoads { get; set; } = 4;
@@ -53,6 +55,7 @@ public sealed class FastMapConfig
         PageTextureBudget = Math.Clamp(PageTextureBudget, 16, 10000);
         ViewportLoadScale = Math.Clamp(ViewportLoadScale, 1.0f, 4.0f);
         PrewarmRadiusChunks = Math.Clamp(PrewarmRadiusChunks, 0, 64);
+        ExperimentalChunkDirtyRepairDelayMilliseconds = Math.Clamp(ExperimentalChunkDirtyRepairDelayMilliseconds, 0, 10000);
         MaxBackgroundTilesPerPass = Math.Clamp(MaxBackgroundTilesPerPass, 1, 1000);
         MaxPageUploadsPerTick = Math.Clamp(MaxPageUploadsPerTick, 1, 32);
         MaxParallelPageLoads = Math.Clamp(MaxParallelPageLoads, 1, 32);
