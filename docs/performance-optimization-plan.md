@@ -81,6 +81,74 @@ Chunk data access:
 
 ## Work Plan
 
+### Release Hardening
+
+Status: In progress. Last updated: 2026-05-09.
+
+Decision:
+
+- Pause page-level generation work for now because dirty-chunk streaming performance is acceptable.
+- Prioritize release safety: client-only packaging, disabled profiling, and no disabled-profiling JIT/runtime overhead in normal Release builds.
+
+Checklist:
+
+- [x] Set `modinfo.json` back to `"side": "Client"`.
+- [x] Make `AutoStartProfilingOnStartup` default `false`.
+- [x] Change `deploy.ps1` to build/package `Release`, not `Debug`.
+- [x] Compile profiling ModSystem/Harmony/worldgen delegate wrappers only when `FASTMAPPROFILING` is defined.
+- [x] Define `FASTMAPPROFILING` only for Debug builds, so Release packages exclude profiling command registration and Harmony profiling patches.
+- [x] Keep `FastMapProfileRecorder` as a Release no-op shim with conditional `RecordClient` / `RecordServer` methods, so profile calls and argument evaluation are removed from Release call sites.
+- [x] Guard remaining profiling timestamp sites behind `FastMapProfileRecorder.ClientEnabled`, which is a compile-time `false` constant in Release.
+- [x] Build Release and verify no server-side profiling command registration is present in the packaged mod.
+- [x] Search packaged output for accidental startup profiling or server profiling activity.
+
+Release interpretation:
+
+- Normal Release builds should still include the world-map crash guard, cache cleanup, vanilla DB safety, and FastMap map layer functionality.
+- Profiling remains available only in Debug/dev builds. If profiling is needed again, use a Debug build or explicitly define `FASTMAPPROFILING`; do not ship that path in public release packages.
+- Verification on 2026-05-09: `dotnet build -c Release` and `dotnet build -c Debug` both pass with `0` warnings. The Release `FastMap.dll` string scan found no `FastMapProfilingModSystem`, `fastmapprofile`, profiling patch, or `server_worldgen_delegate` strings, and packaged `modinfo.json` has `"side": "Client"`.
+- Re-enable instructions live in `docs/profiling.md`, including the extra temporary steps needed for full client + server profiling.
+
+### Current Checkpoint: Page-Level Generation
+
+Status: Deferred while release hardening is active. Last updated: 2026-05-09.
+
+Most recent validated profile after `cb61aef Harden map startup and render profiling`:
+
+- World/profile directory: `C:\Users\chris\AppData\Roaming\VintagestoryData\FastMap\profiles\5671529e-e893-4f67-86bf-3ab286496c61`
+- Client profile: `fastmap-profile-client-20260508-222936.csv`
+- Startup health: stale vanilla map DB `-wal` and `-shm` sidecars were deleted, vanilla DB writeback was disabled by config, no new `LevelFinalize` exception appeared, and the world-map crash guard did not need to block the map.
+- `fastmap_generate_surface_render`: `26167.906 ms`, `33921` calls, `0.7714 ms` average.
+- `fastmap_render_coloraccurate`: `20414.473 ms`, `33921` calls, `0.6018 ms` average.
+- `fastmap_render_shade`: `2695.890 ms`, `33921` calls, `0.0795 ms` average.
+- `fastmap_page_load`: `1425.278 ms`, `118` calls, `12.0786 ms` average.
+- `fastmap_page_upload`: `1126.538 ms`, `3468` calls, `0.3248 ms` average.
+
+Interpretation:
+
+- We are deliberately skipping more color-accurate micro-optimizations for now. In color-accurate worlds, `Block.GetColor(...)` / `Block.GetRandomColor(...)` dominate per-pixel cost, and the next likely large win is to stop doing chunk-sized render work thousands of times.
+- The "big dog" is page-level generation: process and upload one FastMap page as the unit of work instead of generating one `32x32` tile patch at a time, then applying many patches and many uploads.
+- Current profile generated/rendered `33921` chunk tiles, but uploaded `3468` pages. That ratio suggests a page-level path could reduce repeated page patch/apply/upload overhead and create a better place to batch color/shade work, even before changing the color-accurate math.
+
+Next optimization plan:
+
+1. Add page repair queue instrumentation before changing behavior:
+   - Count chunk repairs grouped by `PageKey`.
+   - Record how many dirty chunks are pending per page when a page is processed.
+   - Add profile rows such as `fastmap_page_repair_queued`, `fastmap_page_repair_generated`, and `fastmap_page_repair_chunk_count`.
+2. Build a page-level repair prototype behind a config flag, default off:
+   - Coalesce chunk repair requests into page repair requests.
+   - For each due page, generate all pending valid chunks for that page in one background pass.
+   - Apply the page result once on the main thread and upload the page once, instead of queueing many `FastMapPagePatch` entries.
+3. Preserve streaming feel:
+   - Prioritize visible pages before prewarm/background pages.
+   - Keep a per-pass chunk budget so a dense page cannot monopolize the worker.
+   - Allow partial page progress if a full page would exceed the budget.
+4. Validate against the current chunk-patch path:
+   - Compare `fastmap_generate_surface_render`, `fastmap_patch_apply`, `fastmap_page_upload`, generated chunk count, ready queue depth, and visible fill behavior.
+   - Watch for regressions in responsiveness; a technically faster full-page build is not acceptable if it recreates the old "rectangle, pause, then rest" feeling.
+5. If page-level repair helps, collapse the prototype into the default path. If it does not, use the new instrumentation to decide whether the real waste is chunk-dirty multiplicity, page uploads, or unavoidable per-pixel color-accurate rendering.
+
 ### Phase 1: Better Measurements
 
 Status: In progress. Last updated: 2026-05-08.
@@ -215,7 +283,7 @@ Implemented on 2026-05-08:
 - `Map/FastPageMapLayer.cs` now records `fastmap_generate_surface_extract` and `fastmap_generate_surface_render`; `fastmap_generate_pixel_loop` is now an inclusive wrapper around those two stages.
 - `Map/FastPageMapLayer.cs` now lazily builds `mapDbKnownPositions` from the vanilla `mappiece` table and records `fastmap_page_db_index_build`. `TryBuildPageFromDb(...)` uses this index to skip chunks that are definitely absent instead of blindly probing all `256` chunks in each page.
 - `Map/FastPageMapLayer.cs` now falls back from `sqliteConn` reflection to `getMapPieceCmd.Connection`, and records `fastmap_page_db_index_unavailable` if the vanilla DB connection still cannot be found.
-- `Config/FastMapConfig.cs` now exposes `AutoStartProfilingOnStartup`, default `true` for this profiling branch, so cold-cache startup events are captured before manual `.fastmapprofile start`.
+- `Config/FastMapConfig.cs` exposed `AutoStartProfilingOnStartup` during profiling work so cold-cache startup events could be captured before manual `.fastmapprofile start`; release hardening later changed its default to `false`.
 - `Profiling/FastMapProfilingModSystem.cs` now starts profiling when either `EnableProfiling` or `AutoStartProfilingOnStartup` is enabled.
 - `Map/FastPageMapLayer.cs` now records cold-cache page DB substages: `fastmap_page_db_lock_wait`, `fastmap_page_db_index_lookup`, `fastmap_page_db_get_pieces`, and `fastmap_page_db_copy_tiles`, with candidate/loaded tile counts in `detail`.
 - `Map/FastPageMapLayer.cs` now lazily allocates DB-reconstructed page buffers only after a vanilla map piece is actually loaded. Indexed pages with `candidates=0` no longer allocate a full page pixel buffer before returning a miss.
@@ -321,17 +389,15 @@ Measurement target:
 - Full server worldgen may still have meaningful wins, but we need per-generator timing before choosing a target.
 - GPU acceleration is more promising for page recolor/shade/raster work than for exact vanilla chunk generation.
 
-## Next Run Instructions
+## Profiling Run Instructions
 
-Start both profiles before testing:
+Release builds do not include profiling commands or Harmony profiling patches. To collect profiles, build a Debug/dev package with `FASTMAPPROFILING` defined, then start the client profiler before testing:
 
 - Client: `.fastmapprofile start`
-- Server: `/fastmapprofile start`
 
 After the test:
 
 - Client: `.fastmapprofile flush`
-- Server: `/fastmapprofile flush`
 
 Summarize a profile:
 

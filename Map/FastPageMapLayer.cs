@@ -859,24 +859,33 @@ public sealed class FastPageMapLayer : RGBMapLayer
             return mapDbKnownPositions;
         }
 
-        long indexStart = FastMapProfileRecorder.Timestamp();
-        FastMapProfileRecorder.RecordClient(
-            "fastmap_page_db_index_attempt",
-            0,
-            0,
-            0,
-            detail: mapdb.GetType().FullName ?? "unknown",
-            kind: "event");
+        bool profile = FastMapProfileRecorder.ClientEnabled;
+        long indexStart = profile ? FastMapProfileRecorder.Timestamp() : 0;
+        if (profile)
+        {
+            FastMapProfileRecorder.RecordClient(
+                "fastmap_page_db_index_attempt",
+                0,
+                0,
+                0,
+                detail: mapdb.GetType().FullName ?? "unknown",
+                kind: "event");
+        }
+
         DbConnection? connection = TryGetMapDbConnection();
         if (connection == null)
         {
-            FastMapProfileRecorder.RecordClient(
-                "fastmap_page_db_index_unavailable",
-                0,
-                0,
-                0,
-                FastMapProfileRecorder.ElapsedMilliseconds(indexStart),
-                detail: "connection");
+            if (profile)
+            {
+                FastMapProfileRecorder.RecordClient(
+                    "fastmap_page_db_index_unavailable",
+                    0,
+                    0,
+                    0,
+                    FastMapProfileRecorder.ElapsedMilliseconds(indexStart),
+                    detail: "connection");
+            }
+
             return null;
         }
 
@@ -890,14 +899,18 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
 
         mapDbKnownPositions = positions;
-        FastMapProfileRecorder.RecordClient(
-            "fastmap_page_db_index_build",
-            0,
-            0,
-            0,
-            FastMapProfileRecorder.ElapsedMilliseconds(indexStart),
-            positions.Count,
-            "positionCount");
+        if (profile)
+        {
+            FastMapProfileRecorder.RecordClient(
+                "fastmap_page_db_index_build",
+                0,
+                0,
+                0,
+                FastMapProfileRecorder.ElapsedMilliseconds(indexStart),
+                positions.Count,
+                "positionCount");
+        }
+
         return mapDbKnownPositions;
     }
 
@@ -1020,7 +1033,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
             FastVec2i pageKey = PageKey(patch.ChunkCoord);
             FastMapPageComponent page = GetOrCreatePage(pageKey);
-            long patchStart = FastMapProfileRecorder.Timestamp();
+            bool profile = FastMapProfileRecorder.ClientEnabled;
+            long patchStart = profile ? FastMapProfileRecorder.Timestamp() : 0;
             if (!page.HasAnyValidChunks && pageDiskCache.TryLoad(pageKey, out FastMapPageSnapshot snapshot))
             {
                 page.ApplySnapshot(snapshot);
@@ -1035,13 +1049,17 @@ public sealed class FastPageMapLayer : RGBMapLayer
             }
             pagesToSave.Add(pageKey);
             QueuePageUpload(pageKey);
-            FastMapProfileRecorder.RecordClient(
-                "fastmap_patch_apply",
-                patch.ChunkCoord.X,
-                0,
-                patch.ChunkCoord.Y,
-                FastMapProfileRecorder.ElapsedMilliseconds(patchStart),
-                patch.Pixels.Length * sizeof(int));
+            if (profile)
+            {
+                FastMapProfileRecorder.RecordClient(
+                    "fastmap_patch_apply",
+                    patch.ChunkCoord.X,
+                    0,
+                    patch.ChunkCoord.Y,
+                    FastMapProfileRecorder.ElapsedMilliseconds(patchStart),
+                    patch.Pixels.Length * sizeof(int));
+            }
+
             processed++;
         }
 
@@ -1310,23 +1328,29 @@ public sealed class FastPageMapLayer : RGBMapLayer
             {
                 Interlocked.Increment(ref missingSourceChunks);
                 FastMapProfileRecorder.RecordClient("fastmap_chunk_repair_missing_mapchunk", chunkCoord.X, 0, chunkCoord.Y, detail: repairReason, category: "fastmap_repair");
+
                 continue;
             }
 
-            long repairStart = FastMapProfileRecorder.Timestamp();
+            bool profile = FastMapProfileRecorder.ClientEnabled;
+            long repairStart = profile ? FastMapProfileRecorder.Timestamp() : 0;
             int[]? pixels = GenerateChunkImage(chunkCoord, mapChunk);
             if (pixels == null)
             {
                 Interlocked.Increment(ref missingSourceChunks);
-                FastMapProfileRecorder.RecordClient(
-                    "fastmap_chunk_repair_missing_source",
-                    chunkCoord.X,
-                    0,
-                    chunkCoord.Y,
-                    FastMapProfileRecorder.ElapsedMilliseconds(repairStart),
-                    detail: repairReason,
-                    kind: "inclusive",
-                    category: "fastmap_repair");
+                if (profile)
+                {
+                    FastMapProfileRecorder.RecordClient(
+                        "fastmap_chunk_repair_missing_source",
+                        chunkCoord.X,
+                        0,
+                        chunkCoord.Y,
+                        FastMapProfileRecorder.ElapsedMilliseconds(repairStart),
+                        detail: repairReason,
+                        kind: "inclusive",
+                        category: "fastmap_repair");
+                }
+
                 continue;
             }
 
@@ -1338,16 +1362,19 @@ public sealed class FastPageMapLayer : RGBMapLayer
             Interlocked.Increment(ref generatedChunks);
             readyPatches.Enqueue(new FastMapPagePatch(chunkCoord, pixels));
             QueueTileSave(chunkCoord, pixels);
-            FastMapProfileRecorder.RecordClient(
-                "fastmap_chunk_repair_generated",
-                chunkCoord.X,
-                0,
-                chunkCoord.Y,
-                FastMapProfileRecorder.ElapsedMilliseconds(repairStart),
-                pixels.Length * sizeof(int),
-                detail: repairReason,
-                kind: "inclusive",
-                category: "fastmap_repair");
+            if (profile)
+            {
+                FastMapProfileRecorder.RecordClient(
+                    "fastmap_chunk_repair_generated",
+                    chunkCoord.X,
+                    0,
+                    chunkCoord.Y,
+                    FastMapProfileRecorder.ElapsedMilliseconds(repairStart),
+                    pixels.Length * sizeof(int),
+                    detail: repairReason,
+                    kind: "inclusive",
+                    category: "fastmap_repair");
+            }
         }
     }
 
@@ -1923,7 +1950,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
             return false;
         }
 
-        long lookupStart = FastMapProfileRecorder.Timestamp();
+        bool profile = FastMapProfileRecorder.ClientEnabled;
+        long lookupStart = profile ? FastMapProfileRecorder.Timestamp() : 0;
         bool hit;
         lock (surfaceTileCacheLock)
         {
@@ -1942,14 +1970,18 @@ public sealed class FastPageMapLayer : RGBMapLayer
             }
         }
 
-        FastMapProfileRecorder.RecordClient(
-            "fastmap_surface_cache_lookup",
-            chunkPos.X,
-            0,
-            chunkPos.Y,
-            FastMapProfileRecorder.ElapsedMilliseconds(lookupStart),
-            detail: hit ? "hit" : "miss",
-            category: "fastmap_image");
+        if (profile)
+        {
+            FastMapProfileRecorder.RecordClient(
+                "fastmap_surface_cache_lookup",
+                chunkPos.X,
+                0,
+                chunkPos.Y,
+                FastMapProfileRecorder.ElapsedMilliseconds(lookupStart),
+                detail: hit ? "hit" : "miss",
+                category: "fastmap_image");
+        }
+
         return hit;
     }
 
@@ -1960,7 +1992,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
             return null;
         }
 
-        long storeStart = FastMapProfileRecorder.Timestamp();
+        bool profile = FastMapProfileRecorder.ClientEnabled;
+        long storeStart = profile ? FastMapProfileRecorder.Timestamp() : 0;
         FastMapSurfaceTile surfaceTile = new(chunkPos, colorAccurate, surfaceHeights, surfaceChunkYs, surfaceBlockIds)
         {
             LastTouchedMs = capi.ElapsedMilliseconds
@@ -1974,15 +2007,19 @@ public sealed class FastPageMapLayer : RGBMapLayer
             cacheCount = surfaceTileCache.Count;
         }
 
-        FastMapProfileRecorder.RecordClient(
-            "fastmap_surface_cache_store",
-            chunkPos.X,
-            0,
-            chunkPos.Y,
-            FastMapProfileRecorder.ElapsedMilliseconds(storeStart),
-            TilePixelCount * sizeof(int) * 3,
-            detail: cacheCount.ToString(),
-            category: "fastmap_image");
+        if (profile)
+        {
+            FastMapProfileRecorder.RecordClient(
+                "fastmap_surface_cache_store",
+                chunkPos.X,
+                0,
+                chunkPos.Y,
+                FastMapProfileRecorder.ElapsedMilliseconds(storeStart),
+                TilePixelCount * sizeof(int) * 3,
+                detail: cacheCount.ToString(),
+                category: "fastmap_image");
+        }
+
         return surfaceTile;
     }
 

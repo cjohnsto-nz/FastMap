@@ -1,3 +1,4 @@
+#if FASTMAPPROFILING
 using System;
 using System.Linq;
 using System.Reflection;
@@ -11,29 +12,20 @@ internal static class FastMapHarmonyPatches
 {
     private const string HarmonyId = "chrisunfocused.fastmap.profiling";
     private static readonly object Sync = new();
-    private static bool installed;
+    private static bool clientInstalled;
 
-    public static void Install(ILogger logger)
+    public static void InstallClient(ILogger logger)
     {
         lock (Sync)
         {
-            if (installed)
+            if (clientInstalled)
             {
                 return;
             }
 
             Harmony harmony = new(HarmonyId);
-            Patch(logger, harmony, "Vintagestory.Server.ServerEventAPI", "ChunkColumnGeneration", typeof(ServerRegisterChunkColumnGenerationPatch), parameterCount: 3);
-            Patch(logger, harmony, "Vintagestory.Server.ServerMain", "LoadChunkColumn", typeof(ServerMainLoadChunkColumnPatch), parameterCount: 3);
-            Patch(logger, harmony, "Vintagestory.Server.ServerMain", "LoadChunkColumnFast", typeof(ServerMainLoadChunkColumnFastPatch), parameterCount: 3);
-            Patch(logger, harmony, "Vintagestory.Server.ServerSystemSupplyChunks", "loadOrGenerateChunkColumn_OnChunkThread", typeof(ServerSupplyStepPatch));
-            Patch(logger, harmony, "Vintagestory.Server.ServerSystemSupplyChunks", "TryLoadChunkColumn", typeof(ServerTryLoadColumnPatch));
-            Patch(logger, harmony, "Vintagestory.Server.ServerSystemSupplyChunks", "GenerateNewChunkColumn", typeof(ServerGenerateNewColumnPatch));
-            Patch(logger, harmony, "Vintagestory.Server.ServerSystemSupplyChunks", "PopulateChunk", typeof(ServerPopulateChunkPatch));
-            Patch(logger, harmony, "Vintagestory.Server.ServerSystemSupplyChunks", "mainThreadLoadChunkColumn", typeof(ServerMainThreadLoadColumnPatch));
-            Patch(logger, harmony, "Vintagestory.Server.ServerSystemSendChunks", "collectChunk", typeof(ServerCollectChunkPatch));
             Patch(logger, harmony, "Vintagestory.Client.NoObf.ClientWorldMap", "LoadChunkFromPacket", typeof(ClientLoadChunkPacketPatch));
-            installed = true;
+            clientInstalled = true;
         }
     }
 
@@ -282,3 +274,4 @@ internal static class FastMapHarmonyPatches
         }
     }
 }
+#endif

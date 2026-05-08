@@ -6,10 +6,11 @@ $ErrorActionPreference = 'Stop'
 $ProjectName = 'FastMap'
 $ProjectRoot = $PSScriptRoot
 $ProjectFile = Join-Path $ProjectRoot 'FastMap.csproj'
+$Configuration = 'Release'
 $ModsDir = 'C:\Users\chris\AppData\Roaming\VintagestoryData\Mods'
 $VSProcessName = 'Vintagestory'
 $VSExePath = 'C:\Users\chris\AppData\Roaming\Vintagestory\Vintagestory.exe'
-$SourceDir = Join-Path $ProjectRoot "bin\Debug\ModPackage\$ProjectName"
+$SourceDir = Join-Path $ProjectRoot "bin\$Configuration\ModPackage\$ProjectName"
 $TempDir = Join-Path $env:TEMP 'FastMapTempDeploy'
 $ModConfigPath = 'C:\Users\chris\AppData\Roaming\VintagestoryData\ModConfig\fastmap.json'
 
@@ -26,13 +27,13 @@ if (Test-Path (Join-Path $ProjectRoot 'bin')) { Remove-Item -LiteralPath (Join-P
 if (Test-Path (Join-Path $ProjectRoot 'obj')) { Remove-Item -LiteralPath (Join-Path $ProjectRoot 'obj') -Recurse -Force }
 
 Write-Host 'Cleaning project...' -ForegroundColor Cyan
-dotnet clean $ProjectFile
+dotnet clean $ProjectFile -c $Configuration
 if ($LASTEXITCODE -ne 0) {
     throw 'dotnet clean failed.'
 }
 
 Write-Host 'Building FastMap...' -ForegroundColor Cyan
-dotnet build $ProjectFile
+dotnet build $ProjectFile -c $Configuration
 if ($LASTEXITCODE -ne 0) {
     throw 'dotnet build failed.'
 }

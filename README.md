@@ -36,7 +36,6 @@ Optional LZ4HC writes can reduce cache size further at the cost of more CPU whil
 - `EnablePrewarm` and `PrewarmRadiusChunks`: Generate/cache nearby discovered map tiles in the background.
 - `UseMinimalChunkDirtyRepairFanout`: Uses the smaller renderer-derived dirty repair set instead of the legacy 3x3 neighborhood. Disable if you need to compare against the older conservative behavior.
 - `ExperimentalChunkDirtyRepairDelayMilliseconds`: Disabled by default. Delays chunk-dirty map repairs for profiling experiments; not recommended for normal gameplay.
-- `AutoStartProfilingOnStartup`: Profiling-branch setting. Starts FastMap CSV profiling as soon as the mod starts so cold-cache startup work is captured.
 - `LogStats`: Disabled by default for release. Enable it when diagnosing cache behavior in `client-main.log`.
 
 ## Cache Cleanup
@@ -44,3 +43,7 @@ Optional LZ4HC writes can reduce cache size further at the cost of more CPU whil
 Run `.fastmap cleanupcache` in chat to clean versioned page-cache folders. The command reports how many page-version folders and files were deleted, plus the estimated disk space freed.
 
 By default, cleanup preserves the newest `pages-vN` folder in each world cache. Disable `CleanupKeepLatestPageVersion` only if you intentionally want to remove all versioned page caches and let Fast Map rebuild them.
+
+## Development Profiling
+
+Release builds are client-side only and exclude profiling command registration and Harmony profiling patches. See [docs/profiling.md](docs/profiling.md) for the Debug/dev workflow to re-enable client profiling or full client/server profiling.

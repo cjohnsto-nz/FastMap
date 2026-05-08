@@ -1,3 +1,4 @@
+#if FASTMAPPROFILING
 using System;
 using System.Collections.Concurrent;
 using System.Diagnostics;
@@ -234,3 +235,29 @@ public static class FastMapProfileRecorder
         }
     }
 }
+#else
+using System.Diagnostics;
+
+namespace FastMap.Profiling;
+
+public static class FastMapProfileRecorder
+{
+    public const bool ClientEnabled = false;
+
+    public const bool ServerEnabled = false;
+
+    [Conditional("FASTMAPPROFILING")]
+    public static void RecordClient(string stage, int chunkX = 0, int chunkY = 0, int chunkZ = 0, double durationMs = 0, long bytes = 0, string? detail = null, string kind = "exclusive", string category = "general")
+    {
+    }
+
+    [Conditional("FASTMAPPROFILING")]
+    public static void RecordServer(string stage, int chunkX = 0, int chunkY = 0, int chunkZ = 0, double durationMs = 0, long bytes = 0, string? detail = null, string kind = "exclusive", string category = "general")
+    {
+    }
+
+    public static long Timestamp() => 0;
+
+    public static double ElapsedMilliseconds(long startTimestamp) => 0;
+}
+#endif

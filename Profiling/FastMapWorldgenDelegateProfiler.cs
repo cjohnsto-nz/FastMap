@@ -1,3 +1,4 @@
+#if FASTMAPPROFILING
 using System;
 using Vintagestory.API.Common;
 using Vintagestory.API.Server;
@@ -45,3 +46,4 @@ internal static class FastMapWorldgenDelegateProfiler
         return typeName + "." + handler.Method.Name;
     }
 }
+#endif
