@@ -11,6 +11,8 @@ public sealed class FastMapConfig
     public bool UseHighCompressionCache { get; set; } = false;
     public bool EnableTextureAtlas { get; set; } = true;
     public bool CleanupKeepLatestPageVersion { get; set; } = true;
+    public bool EnableVanillaMapDbWriteback { get; set; } = false;
+    public bool CleanupStaleVanillaMapDbSidecarsOnStartup { get; set; } = true;
     public float ViewportLoadScale { get; set; } = 1.5f;
     public int PrewarmRadiusChunks { get; set; } = 16;
     public bool EnablePrewarm { get; set; } = true;

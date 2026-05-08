@@ -61,6 +61,22 @@
       "comment": "When running .fastmap cleanupcache, keep the newest pages-vN folder in each world cache and delete only older page-version folders."
     },
     {
+      "code": "EnableVanillaMapDbWriteback",
+      "type": "boolean",
+      "default": false,
+      "clientSide": true,
+      "ingui": "Write vanilla map DB",
+      "comment": "Also write generated FastMap terrain tiles back to Vintage Story's vanilla map database. Disabled by default so FastMap only writes its own page cache."
+    },
+    {
+      "code": "CleanupStaleVanillaMapDbSidecarsOnStartup",
+      "type": "boolean",
+      "default": true,
+      "clientSide": true,
+      "ingui": "Clean vanilla DB sidecars",
+      "comment": "Delete stale <world>.db-wal and <world>.db-shm files once on startup before FastMap opens the vanilla map database."
+    },
+    {
       "code": "ViewportLoadScale",
       "type": "float",
       "default": 1.5,

@@ -34,6 +34,7 @@ public sealed class FastMapModSystem : ModSystem
         Config = FastMapConfig.Load(api);
         RegisterConfigReloadListeners(api);
         RegisterClientCommands(api);
+        FastMapWorldMapGuard.Install(api.Logger);
 
         ReplaceTerrainLayerRegistration();
 

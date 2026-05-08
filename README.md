@@ -31,6 +31,8 @@ Optional LZ4HC writes can reduce cache size further at the cost of more CPU whil
 - `UseFilteredCache`: Experimental. Writes `pages-v3` files with an RGBA channel-shuffle filter before compression. This can help some worlds, but may increase cache size; default is off.
 - `UseHighCompressionCache`: Uses LZ4HC for future compressed writes. Existing cache files remain readable; loading speed is unchanged, but background saves use more CPU.
 - `CleanupKeepLatestPageVersion`: Controls `.fastmap cleanupcache`. When enabled, cleanup keeps the newest `pages-vN` folder in each world cache and removes only older page-version folders.
+- `EnableVanillaMapDbWriteback`: Disabled by default. When enabled, Fast Map also writes generated terrain tiles back to Vintage Story's vanilla map database.
+- `CleanupStaleVanillaMapDbSidecarsOnStartup`: Deletes stale vanilla map database `-wal` and `-shm` sidecar files once on startup before Fast Map opens the vanilla map DB.
 - `EnablePrewarm` and `PrewarmRadiusChunks`: Generate/cache nearby discovered map tiles in the background.
 - `UseMinimalChunkDirtyRepairFanout`: Uses the smaller renderer-derived dirty repair set instead of the legacy 3x3 neighborhood. Disable if you need to compare against the older conservative behavior.
 - `ExperimentalChunkDirtyRepairDelayMilliseconds`: Disabled by default. Delays chunk-dirty map repairs for profiling experiments; not recommended for normal gameplay.
