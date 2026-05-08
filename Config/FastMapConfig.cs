@@ -28,6 +28,7 @@ public sealed class FastMapConfig
     public bool LogStats { get; set; } = false;
     public float LogStatsIntervalSeconds { get; set; } = 5.0f;
     public bool EnableProfiling { get; set; } = false;
+    public bool AutoStartProfilingOnStartup { get; set; } = true;
     public int ProfileAutoFlushIntervalSeconds { get; set; } = 5;
 
     public static FastMapConfig Load(ICoreAPI api)

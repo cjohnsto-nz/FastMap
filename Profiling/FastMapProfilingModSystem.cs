@@ -15,7 +15,7 @@ public sealed class FastMapProfilingModSystem : ModSystem
     {
         config = FastMapConfig.Load(api);
         FastMapHarmonyPatches.Install(api.Logger);
-        if (config.EnableProfiling)
+        if (config.EnableProfiling || config.AutoStartProfilingOnStartup)
         {
             FastMapProfileRecorder.Start(api, config);
         }
