@@ -1,0 +1,9 @@
+﻿world,stage,scenario,operations,rowsOrBytes,totalMs,msPerOperation,pages,detail
+"foggy-kingdom-coloraccurate","metadata","db_bytes",1,799985664,0.0000,0.000000,0,""
+"foggy-kingdom-coloraccurate","metadata","mappiece_rows",1,65031,0.0000,0.000000,0,""
+"foggy-kingdom-coloraccurate","scan_positions","all_rows",1,65031,190.6652,190.665200,0,""
+"foggy-kingdom-coloraccurate","metadata","selected_pages",290,65031,0.0000,0.000000,0,"totalPages=290"
+"foggy-kingdom-coloraccurate","full_scan_decode_group","all_rows",1,65031,2090.9255,2090.925500,290,"pixels=66591744;deserialized=65031;blobMs=64.28;deserializeMs=1513.18"
+"foggy-kingdom-coloraccurate","point_probe_known_pages","selected_pages",290,65031,2295.3324,7.914939,290,"pixels=66591744;deserialized=65031;sqliteQueries=65031;blobMs=75.36;deserializeMs=1320.25;copyMs=7.99"
+"foggy-kingdom-coloraccurate","page_in_query","selected_pages",290,65031,2000.7223,6.899042,290,"pixels=66591744;deserialized=65031;sqliteQueries=290;blobMs=63.43;deserializeMs=1368.69;copyMs=7.56"
+"foggy-kingdom-coloraccurate","page_in_query_parallel","selected_pages",290,65031,1331.5820,4.591662,290,"pixels=66591744;deserialized=65031;sqliteQueries=290;blobMs=110.57;deserializeMs=2286.24;copyMs=21.35"

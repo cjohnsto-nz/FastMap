@@ -48,6 +48,7 @@
     <Compile Remove="_tmp_*.cs" />
     <Compile Remove="_ilspy_vsessentials\**\*.cs" />
     <Compile Remove="_ilspy_vslib\**\*.cs" />
+    <Compile Remove="tools\**\*.cs" />
   </ItemGroup>
 
   <Target Name="PackageMod" AfterTargets="Build">

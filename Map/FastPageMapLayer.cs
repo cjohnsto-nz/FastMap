@@ -14,6 +14,7 @@ using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Config;
 using Vintagestory.API.MathTools;
+using Vintagestory.API.Util;
 using Vintagestory.GameContent;
 
 namespace FastMap.Map;
@@ -23,6 +24,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private const int ChunkSize = FastMapPageComponent.ChunkSize;
     private const int ChunksPerPage = FastMapPageComponent.ChunksPerPage;
     private const int TilePixelCount = ChunkSize * ChunkSize;
+    private const int NativeDbQueryBatchSize = 512;
     private static readonly FastVec2i[] MinimalDirtyRepairOffsets =
     {
         new(0, 0),
@@ -61,11 +63,13 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private readonly object chunkValidityLock = new();
 
     private readonly object dbLock = new();
+    private readonly SemaphoreSlim nativeDbPageBuildSemaphore;
     private readonly object pageSaveLock = new();
     private readonly Dictionary<FastVec2i, FastMapPageSnapshot> pendingPageSaves = new();
     private readonly Dictionary<FastVec2i, MapPieceDB> pendingTileSaves = new();
 
     private MapDB? mapdb;
+    private string? mapDbPath;
     private HashSet<ulong>? mapDbKnownPositions;
     private IWorldChunk[] chunksTmp = Array.Empty<IWorldChunk>();
     private Dictionary<string, int> colorsByCode = new();
@@ -73,6 +77,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private bool[] blockIsLakeByBlockId = Array.Empty<bool>();
     private bool[] blockIsSnowByBlockId = Array.Empty<bool>();
     private readonly ConcurrentDictionary<string, byte> loggedColorAccurateFallbacks = new();
+    private readonly object surfaceTileCacheLock = new();
+    private readonly Dictionary<FastVec2i, FastMapSurfaceTile> surfaceTileCache = new();
     private bool colorAccurate;
     private float colorRandomizationWeight = 0.6f;
     private float workerAccum;
@@ -129,6 +135,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         capi = (ICoreClientAPI)api;
         config = FastMapModSystem.Instance?.Config ?? new FastMapConfig();
         config.Normalize();
+        nativeDbPageBuildSemaphore = new SemaphoreSlim(config.MaxParallelNativeDbPageBuilds);
         pageDiskCache = new FastMapPageDiskCache(api.World.SavegameIdentifier, config.EnableCompressedCache, config.UseFilteredCache, config.UseHighCompressionCache);
         textureAtlas = config.EnableTextureAtlas ? new FastMapTextureAtlas(capi) : null;
 
@@ -262,6 +269,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         FlushPendingSaves();
         mapdb?.Dispose();
         mapdb = null;
+        mapDbPath = null;
         mapDbKnownPositions = null;
 
         foreach (FastMapPageComponent page in pages.Values)
@@ -275,6 +283,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
         visibleChunks.Clear();
         visiblePageKeys.Clear();
         chunksKnownValid.Clear();
+        lock (surfaceTileCacheLock)
+        {
+            surfaceTileCache.Clear();
+        }
+
         colorsByCode.Clear();
         loggedColorAccurateFallbacks.Clear();
         blockColorByBlockId = Array.Empty<int>();
@@ -290,6 +303,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         string mapsDir = Path.Combine(GamePaths.DataPath, "Maps");
         GamePaths.EnsurePathExists(mapsDir);
         string path = Path.Combine(mapsDir, api.World.SavegameIdentifier + ".db");
+        mapDbPath = path;
         if (!mapdb.OpenOrCreate(path, ref error, requireWriteAccess: true, corruptionProtection: true, doIntegrityCheck: false))
         {
             throw new Exception(error ?? $"Cannot open {path}");
@@ -447,7 +461,14 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
             Interlocked.Increment(ref pageDbHits);
             Interlocked.Add(ref pageLoadMs, stopwatch.ElapsedMilliseconds);
-            FastMapProfileRecorder.RecordClient("fastmap_page_db_build", pageKey.X, 0, pageKey.Y, stopwatch.Elapsed.TotalMilliseconds, detail: "hit");
+            FastMapProfileRecorder.RecordClient(
+                "fastmap_page_db_build",
+                pageKey.X,
+                0,
+                pageKey.Y,
+                stopwatch.Elapsed.TotalMilliseconds,
+                detail: "hit",
+                kind: "inclusive");
             QueuePageSave(dbSnapshot);
             readyPages.Enqueue(dbSnapshot);
             return;
@@ -469,6 +490,191 @@ public sealed class FastPageMapLayer : RGBMapLayer
     }
 
     private bool TryBuildPageFromDb(FastVec2i pageKey, out FastMapPageSnapshot snapshot)
+    {
+        if (config.UseBatchedNativeDbPageQueries)
+        {
+            bool hasPage = TryBuildPageFromDbBatchedQuery(pageKey, out snapshot, out bool completed);
+            if (completed)
+            {
+                return hasPage;
+            }
+        }
+
+        return TryBuildPageFromDbLegacy(pageKey, out snapshot);
+    }
+
+    private bool TryBuildPageFromDbBatchedQuery(FastVec2i pageKey, out FastMapPageSnapshot snapshot, out bool completed)
+    {
+        snapshot = null!;
+        completed = false;
+        if (mapdb == null)
+        {
+            return false;
+        }
+
+        FastVec2i baseCoord = new(pageKey.X * ChunksPerPage, pageKey.Y * ChunksPerPage);
+        int[]? pixels = null;
+        uint[]? validRows = null;
+        bool profile = FastMapProfileRecorder.ClientEnabled;
+        long waitStart = profile ? FastMapProfileRecorder.Timestamp() : 0;
+        double waitMs = 0;
+        double indexMs = 0;
+        double queryMs = 0;
+        double deserializeMs = 0;
+        double copyMs = 0;
+        int candidateCount = 0;
+        int loadedCount = 0;
+        int queryCount = 0;
+        double throttleMs = 0;
+        bool semaphoreHeld = false;
+
+        try
+        {
+            List<NativeDbPageCandidate> candidates = new(ChunksPerPage * ChunksPerPage);
+            Dictionary<ulong, int> localIndexByPosition = new(ChunksPerPage * ChunksPerPage);
+
+            lock (dbLock)
+            {
+                HashSet<ulong>? knownPositions;
+
+                if (profile)
+                {
+                    waitMs = FastMapProfileRecorder.ElapsedMilliseconds(waitStart);
+                }
+
+                long indexStart = profile ? FastMapProfileRecorder.Timestamp() : 0;
+                knownPositions = GetOrBuildMapDbKnownPositions();
+                if (profile)
+                {
+                    indexMs = FastMapProfileRecorder.ElapsedMilliseconds(indexStart);
+                }
+
+                for (int dz = 0; dz < ChunksPerPage; dz++)
+                {
+                    for (int dx = 0; dx < ChunksPerPage; dx++)
+                    {
+                        FastVec2i chunkCoord = new(baseCoord.X + dx, baseCoord.Y + dz);
+                        ulong chunkIndex = chunkCoord.ToChunkIndex();
+                        if (knownPositions != null && !knownPositions.Contains(chunkIndex))
+                        {
+                            continue;
+                        }
+
+                        candidateCount++;
+                        int localIndex = dz * ChunksPerPage + dx;
+                        candidates.Add(new NativeDbPageCandidate(chunkIndex, dx, dz));
+                        localIndexByPosition[chunkIndex] = localIndex;
+                    }
+                }
+            }
+
+            if (candidates.Count > 0)
+            {
+                long throttleStart = profile ? FastMapProfileRecorder.Timestamp() : 0;
+                nativeDbPageBuildSemaphore.Wait();
+                semaphoreHeld = true;
+                throttleMs = profile ? FastMapProfileRecorder.ElapsedMilliseconds(throttleStart) : 0;
+                using DbConnection? connection = TryOpenNativeDbReadConnection();
+                if (connection == null)
+                {
+                    return false;
+                }
+
+                using (connection)
+                {
+                    for (int start = 0; start < candidates.Count; start += NativeDbQueryBatchSize)
+                    {
+                        int count = Math.Min(NativeDbQueryBatchSize, candidates.Count - start);
+                        using DbCommand command = CreateNativeDbPageQueryCommand(connection, candidates, start, count);
+                        queryCount++;
+
+                        long queryStart = profile ? FastMapProfileRecorder.Timestamp() : 0;
+                        using DbDataReader reader = command.ExecuteReader();
+                        if (profile)
+                        {
+                            queryMs += FastMapProfileRecorder.ElapsedMilliseconds(queryStart);
+                        }
+
+                        while (reader.Read())
+                        {
+                            ulong position = ReadDbPosition(reader["position"]);
+                            if (!localIndexByPosition.TryGetValue(position, out int localIndex))
+                            {
+                                continue;
+                            }
+
+                            object dataObject = reader["data"];
+                            if (dataObject is not byte[] data)
+                            {
+                                continue;
+                            }
+
+                            long deserializeStart = profile ? FastMapProfileRecorder.Timestamp() : 0;
+                            MapPieceDB piece = SerializerUtil.Deserialize<MapPieceDB>(data);
+                            if (profile)
+                            {
+                                deserializeMs += FastMapProfileRecorder.ElapsedMilliseconds(deserializeStart);
+                            }
+
+                            if (piece?.Pixels == null)
+                            {
+                                continue;
+                            }
+
+                            loadedCount++;
+                            int dx = localIndex % ChunksPerPage;
+                            int dz = localIndex / ChunksPerPage;
+                            pixels ??= new int[FastMapPageComponent.PixelCount];
+                            validRows ??= new uint[ChunksPerPage];
+                            long copyStart = profile ? FastMapProfileRecorder.Timestamp() : 0;
+                            CopyTileIntoPage(piece.Pixels, pixels, dx, dz);
+                            if (profile)
+                            {
+                                copyMs += FastMapProfileRecorder.ElapsedMilliseconds(copyStart);
+                            }
+
+                            validRows[dz] |= 1u << dx;
+                            Interlocked.Increment(ref tileDbHits);
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            api.World.Logger.Warning("[FastMap] Batched native map DB page query failed for {0}/{1}, falling back to legacy point queries: {2}", pageKey.X, pageKey.Y, ex.Message);
+            return false;
+        }
+        finally
+        {
+            if (semaphoreHeld)
+            {
+                nativeDbPageBuildSemaphore.Release();
+            }
+        }
+
+        bool hasAny = loadedCount > 0 && pixels != null && validRows != null;
+        if (hasAny)
+        {
+            snapshot = new FastMapPageSnapshot(pageKey, validRows!, pixels!);
+        }
+
+        if (profile)
+        {
+            string detail = $"mode=batched;queries={queryCount};candidates={candidateCount};loaded={loadedCount};hasAny={hasAny}";
+            FastMapProfileRecorder.RecordClient("fastmap_page_db_throttle_wait", pageKey.X, 0, pageKey.Y, throttleMs, detail: detail);
+            FastMapProfileRecorder.RecordClient("fastmap_page_db_lock_wait", pageKey.X, 0, pageKey.Y, waitMs, detail: detail);
+            FastMapProfileRecorder.RecordClient("fastmap_page_db_index_lookup", pageKey.X, 0, pageKey.Y, indexMs, detail: detail);
+            FastMapProfileRecorder.RecordClient("fastmap_page_db_query", pageKey.X, 0, pageKey.Y, queryMs, bytes: loadedCount, detail: detail);
+            FastMapProfileRecorder.RecordClient("fastmap_page_db_deserialize", pageKey.X, 0, pageKey.Y, deserializeMs, bytes: loadedCount, detail: detail);
+            FastMapProfileRecorder.RecordClient("fastmap_page_db_copy_tiles", pageKey.X, 0, pageKey.Y, copyMs, bytes: loadedCount, detail: detail);
+        }
+
+        completed = true;
+        return hasAny;
+    }
+
+    private bool TryBuildPageFromDbLegacy(FastVec2i pageKey, out FastMapPageSnapshot snapshot)
     {
         snapshot = null!;
         if (mapdb == null)
@@ -550,7 +756,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         if (profile)
         {
-            string detail = $"candidates={candidateCount};loaded={loadedCount};hasAny={hasAny}";
+            string detail = $"mode=legacy;candidates={candidateCount};loaded={loadedCount};hasAny={hasAny}";
             FastMapProfileRecorder.RecordClient("fastmap_page_db_lock_wait", pageKey.X, 0, pageKey.Y, waitMs, detail: detail);
             FastMapProfileRecorder.RecordClient("fastmap_page_db_index_lookup", pageKey.X, 0, pageKey.Y, indexMs, detail: detail);
             FastMapProfileRecorder.RecordClient("fastmap_page_db_get_pieces", pageKey.X, 0, pageKey.Y, getMs, bytes: loadedCount, detail: detail);
@@ -558,6 +764,30 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
 
         return hasAny;
+    }
+
+    private static DbCommand CreateNativeDbPageQueryCommand(DbConnection connection, List<NativeDbPageCandidate> candidates, int start, int count)
+    {
+        DbCommand command = connection.CreateCommand();
+        StringBuilder sql = new("SELECT position, data FROM mappiece WHERE position IN (");
+        for (int i = 0; i < count; i++)
+        {
+            if (i > 0)
+            {
+                sql.Append(',');
+            }
+
+            string parameterName = "@p" + i;
+            sql.Append(parameterName);
+            DbParameter parameter = command.CreateParameter();
+            parameter.ParameterName = parameterName;
+            parameter.Value = unchecked((long)candidates[start + i].Position);
+            command.Parameters.Add(parameter);
+        }
+
+        sql.Append(')');
+        command.CommandText = sql.ToString();
+        return command;
     }
 
     private HashSet<ulong>? GetOrBuildMapDbKnownPositions()
@@ -594,7 +824,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         using DbDataReader reader = command.ExecuteReader();
         while (reader.Read())
         {
-            positions.Add(Convert.ToUInt64(reader["position"]));
+            positions.Add(ReadDbPosition(reader["position"]));
         }
 
         mapDbKnownPositions = positions;
@@ -635,6 +865,44 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
 
         return null;
+    }
+
+    private DbConnection? TryOpenNativeDbReadConnection()
+    {
+        if (mapDbPath == null)
+        {
+            return null;
+        }
+
+        DbConnection? existingConnection = TryGetMapDbConnection();
+        Type? connectionType = existingConnection?.GetType();
+        if (connectionType == null)
+        {
+            return null;
+        }
+
+        string connectionString = "Data Source=" + mapDbPath + ";Mode=ReadOnly;Cache=Shared";
+        if (Activator.CreateInstance(connectionType, connectionString) is not DbConnection connection)
+        {
+            return null;
+        }
+
+        connection.Open();
+        using DbCommand command = connection.CreateCommand();
+        command.CommandText = "PRAGMA query_only = ON; PRAGMA temp_store = MEMORY;";
+        command.ExecuteNonQuery();
+        return connection;
+    }
+
+    private static ulong ReadDbPosition(object value)
+    {
+        return value switch
+        {
+            ulong ulongValue => ulongValue,
+            long longValue => unchecked((ulong)longValue),
+            int intValue => unchecked((ulong)intValue),
+            _ => Convert.ToUInt64(value)
+        };
     }
 
     private void ProcessReadyPages(Stopwatch frameStopwatch)
@@ -809,6 +1077,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
         {
             return;
         }
+
+        InvalidateSurfaceTile(new FastVec2i(chunkCoord.X, chunkCoord.Z));
 
         if (config.UseMinimalChunkDirtyRepairFanout)
         {
@@ -1301,6 +1571,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
         queuedPageUploads.Clear();
         pagesNeedingUpload.Clear();
 
+        lock (surfaceTileCacheLock)
+        {
+            surfaceTileCache.Clear();
+        }
+
         lock (pageSaveLock)
         {
             pendingPageSaves.Clear();
@@ -1420,17 +1695,29 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
             BlockPos blockPos = new(0);
             long pixelLoopStart = profile ? FastMapProfileRecorder.Timestamp() : 0;
-            long surfaceExtractStart = pixelLoopStart;
-            ExtractSurfaceTile(mapChunk, surfaceHeights, surfaceChunkYs, surfaceBlockIds);
-            if (profile)
+            if (!TryGetCachedSurfaceTile(chunkPos, out FastMapSurfaceTile? surfaceTile))
             {
-                FastMapProfileRecorder.RecordClient(
-                    "fastmap_generate_surface_extract",
-                    chunkPos.X,
-                    0,
-                    chunkPos.Y,
-                    FastMapProfileRecorder.ElapsedMilliseconds(surfaceExtractStart),
-                    category: "fastmap_image");
+                long surfaceExtractStart = pixelLoopStart;
+                ExtractSurfaceTile(mapChunk, surfaceHeights, surfaceChunkYs, surfaceBlockIds);
+                if (profile)
+                {
+                    FastMapProfileRecorder.RecordClient(
+                        "fastmap_generate_surface_extract",
+                        chunkPos.X,
+                        0,
+                        chunkPos.Y,
+                        FastMapProfileRecorder.ElapsedMilliseconds(surfaceExtractStart),
+                        detail: colorAccurate ? "coloraccurate" : "cache_miss",
+                        category: "fastmap_image");
+                }
+
+                surfaceTile = StoreSurfaceTile(chunkPos, surfaceHeights, surfaceChunkYs, surfaceBlockIds);
+            }
+            else
+            {
+                surfaceHeights = surfaceTile!.Heights;
+                surfaceChunkYs = surfaceTile.ChunkYs;
+                surfaceBlockIds = surfaceTile.BlockIds;
             }
 
             long surfaceRenderStart = profile ? FastMapProfileRecorder.Timestamp() : 0;
@@ -1521,6 +1808,112 @@ public sealed class FastPageMapLayer : RGBMapLayer
         foreach (FastVec2i chunkCoord in chunkCoords)
         {
             mapDbKnownPositions.Add(chunkCoord.ToChunkIndex());
+        }
+    }
+
+    private bool TryGetCachedSurfaceTile(FastVec2i chunkPos, out FastMapSurfaceTile? surfaceTile)
+    {
+        surfaceTile = null;
+        if (config.SurfaceTileCacheBudget <= 0)
+        {
+            return false;
+        }
+
+        long lookupStart = FastMapProfileRecorder.Timestamp();
+        bool hit;
+        lock (surfaceTileCacheLock)
+        {
+            hit = surfaceTileCache.TryGetValue(chunkPos, out surfaceTile);
+            if (hit && surfaceTile != null)
+            {
+                if (surfaceTile.ColorAccurate == colorAccurate)
+                {
+                    surfaceTile.LastTouchedMs = capi.ElapsedMilliseconds;
+                }
+                else
+                {
+                    hit = false;
+                    surfaceTile = null;
+                }
+            }
+        }
+
+        FastMapProfileRecorder.RecordClient(
+            "fastmap_surface_cache_lookup",
+            chunkPos.X,
+            0,
+            chunkPos.Y,
+            FastMapProfileRecorder.ElapsedMilliseconds(lookupStart),
+            detail: hit ? "hit" : "miss",
+            category: "fastmap_image");
+        return hit;
+    }
+
+    private FastMapSurfaceTile? StoreSurfaceTile(FastVec2i chunkPos, int[] surfaceHeights, int[] surfaceChunkYs, int[] surfaceBlockIds)
+    {
+        if (config.SurfaceTileCacheBudget <= 0)
+        {
+            return null;
+        }
+
+        long storeStart = FastMapProfileRecorder.Timestamp();
+        FastMapSurfaceTile surfaceTile = new(chunkPos, colorAccurate, surfaceHeights, surfaceChunkYs, surfaceBlockIds)
+        {
+            LastTouchedMs = capi.ElapsedMilliseconds
+        };
+
+        int cacheCount;
+        lock (surfaceTileCacheLock)
+        {
+            surfaceTileCache[chunkPos] = surfaceTile;
+            EvictSurfaceTileCacheLocked();
+            cacheCount = surfaceTileCache.Count;
+        }
+
+        FastMapProfileRecorder.RecordClient(
+            "fastmap_surface_cache_store",
+            chunkPos.X,
+            0,
+            chunkPos.Y,
+            FastMapProfileRecorder.ElapsedMilliseconds(storeStart),
+            TilePixelCount * sizeof(int) * 3,
+            detail: cacheCount.ToString(),
+            category: "fastmap_image");
+        return surfaceTile;
+    }
+
+    private void InvalidateSurfaceTile(FastVec2i chunkCoord)
+    {
+        lock (surfaceTileCacheLock)
+        {
+            surfaceTileCache.Remove(chunkCoord);
+        }
+    }
+
+    private void EvictSurfaceTileCacheLocked()
+    {
+        int budget = config.SurfaceTileCacheBudget;
+        while (surfaceTileCache.Count > budget)
+        {
+            FastVec2i oldestKey = default;
+            long oldestTouchedMs = long.MaxValue;
+            bool found = false;
+            foreach (KeyValuePair<FastVec2i, FastMapSurfaceTile> entry in surfaceTileCache)
+            {
+                if (!found || entry.Value.LastTouchedMs < oldestTouchedMs)
+                {
+                    oldestKey = entry.Key;
+                    oldestTouchedMs = entry.Value.LastTouchedMs;
+                    found = true;
+                }
+            }
+
+            if (!found)
+            {
+                return;
+            }
+
+            surfaceTileCache.Remove(oldestKey);
         }
     }
 
@@ -1842,4 +2235,6 @@ public sealed class FastPageMapLayer : RGBMapLayer
             Array.Copy(tilePixels, row * ChunkSize, pagePixels, (dstY + row) * FastMapPageComponent.PageSize + dstX, ChunkSize);
         }
     }
+
+    private readonly record struct NativeDbPageCandidate(ulong Position, int LocalChunkX, int LocalChunkZ);
 }

@@ -20,6 +20,9 @@ public sealed class FastMapConfig
     public int MaxBackgroundTilesPerPass { get; set; } = 256;
     public int MaxPageUploadsPerTick { get; set; } = 2;
     public int MaxParallelPageLoads { get; set; } = 4;
+    public bool UseBatchedNativeDbPageQueries { get; set; } = true;
+    public int MaxParallelNativeDbPageBuilds { get; set; } = 6;
+    public int SurfaceTileCacheBudget { get; set; } = 4096;
     public int MainThreadUploadBudgetMilliseconds { get; set; } = 4;
     public float BackgroundWorkIntervalSeconds { get; set; } = 0.01f;
     public float PrewarmIntervalSeconds { get; set; } = 2.0f;
@@ -60,6 +63,8 @@ public sealed class FastMapConfig
         MaxBackgroundTilesPerPass = Math.Clamp(MaxBackgroundTilesPerPass, 1, 1000);
         MaxPageUploadsPerTick = Math.Clamp(MaxPageUploadsPerTick, 1, 32);
         MaxParallelPageLoads = Math.Clamp(MaxParallelPageLoads, 1, 32);
+        MaxParallelNativeDbPageBuilds = Math.Clamp(MaxParallelNativeDbPageBuilds, 1, 32);
+        SurfaceTileCacheBudget = Math.Clamp(SurfaceTileCacheBudget, 0, 100000);
         MainThreadUploadBudgetMilliseconds = Math.Clamp(MainThreadUploadBudgetMilliseconds, 1, 32);
         BackgroundWorkIntervalSeconds = Math.Clamp(BackgroundWorkIntervalSeconds, 0.01f, 1.0f);
         PrewarmIntervalSeconds = Math.Clamp(PrewarmIntervalSeconds, 0.25f, 30f);
