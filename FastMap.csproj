@@ -72,6 +72,7 @@
 
     <Message Text="Packaging FastMap mod to: $(FullModPackagePath)" Importance="high" />
 
+    <RemoveDir Directories="$(FullModPackagePath)" Condition="Exists('$(FullModPackagePath)')" />
     <MakeDir Directories="$(FullModPackagePath)" />
     <Copy SourceFiles="modinfo.json" DestinationFolder="$(FullModPackagePath)" />
     <Message Text="Rewriting packaged modinfo.json game dependency to: $(PackagedGameDependencyVersion), game version key: $(PackagedGameVersionKey)" Importance="high" />

@@ -137,6 +137,34 @@ internal sealed class FastMapPageComponent : MapComponent
         }
     }
 
+    public void SetLowResolutionChunk(FastVec2i chunkCoord, int[] tilePixels, int chunkPixelSize)
+    {
+        int localChunkX = chunkCoord.X - BaseChunkCoord.X;
+        int localChunkZ = chunkCoord.Y - BaseChunkCoord.Y;
+        if (localChunkX < 0 || localChunkX >= ChunksPerPage || localChunkZ < 0 || localChunkZ >= ChunksPerPage)
+        {
+            return;
+        }
+
+        chunkPixelSize = Math.Clamp(chunkPixelSize, 1, ChunkSize);
+        int lowResolutionPageSize = chunkPixelSize * ChunksPerPage;
+        int[] pagePixels = EnsurePixelBuffer(lowResolutionPageSize);
+        int dstX = localChunkX * chunkPixelSize;
+        int dstY = localChunkZ * chunkPixelSize;
+
+        for (int row = 0; row < chunkPixelSize; row++)
+        {
+            System.Array.Copy(tilePixels, row * chunkPixelSize, pagePixels, (dstY + row) * lowResolutionPageSize + dstX, chunkPixelSize);
+        }
+
+        uint bit = 1u << localChunkX;
+        if ((validRows[localChunkZ] & bit) == 0)
+        {
+            validRows[localChunkZ] |= bit;
+            visibleChunksMeshDirty = true;
+        }
+    }
+
     public FastMapPageSnapshot CreateSnapshot()
     {
         int[] pagePixels = EnsurePixelBuffer();
@@ -144,7 +172,20 @@ internal sealed class FastMapPageComponent : MapComponent
         uint[] validCopy = new uint[validRows.Length];
         System.Array.Copy(pagePixels, pixelCopy, pagePixels.Length);
         System.Array.Copy(validRows, validCopy, validRows.Length);
-        return new FastMapPageSnapshot(PageKey, validCopy, pixelCopy);
+        int resolutionScale = Math.Max(1, (PageSize + texturePixelSize - 1) / texturePixelSize);
+        return new FastMapPageSnapshot(PageKey, validCopy, pixelCopy, synthetic: resolutionScale > 1, resolutionScale: resolutionScale);
+    }
+
+    public int[]? CopyPixels()
+    {
+        if (pixels == null)
+        {
+            return null;
+        }
+
+        int[] copy = new int[pixels.Length];
+        System.Array.Copy(pixels, copy, pixels.Length);
+        return copy;
     }
 
     public void Upload()
@@ -309,10 +350,16 @@ internal sealed class FastMapPageComponent : MapComponent
 
     private int[] EnsurePixelBuffer()
     {
-        if (pixels == null || texturePixelSize != PageSize)
+        return EnsurePixelBuffer(PageSize);
+    }
+
+    private int[] EnsurePixelBuffer(int pixelSize)
+    {
+        pixelSize = Math.Clamp(pixelSize, 1, PageSize);
+        if (pixels == null || texturePixelSize != pixelSize)
         {
-            texturePixelSize = PageSize;
-            pixels = new int[PixelCount];
+            texturePixelSize = pixelSize;
+            pixels = new int[pixelSize * pixelSize];
         }
 
         return pixels;

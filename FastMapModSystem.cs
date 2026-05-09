@@ -16,6 +16,8 @@ namespace FastMap;
 public sealed class FastMapModSystem : ModSystem
 {
     private const string ModId = "fastmap";
+    private const string TerrainLayerRegistryCode = "chunks";
+    private const string MapperChunkMapLayerFullName = "Mapper.WorldMap.MapperChunkMapLayer";
     private const string ConfigLibConfigSavedEvent = "configlib:fastmap:config-saved";
     private const string ConfigLibConfigReloadEvent = "configlib:config-reload";
 
@@ -229,13 +231,19 @@ public sealed class FastMapModSystem : ModSystem
             return;
         }
 
-        worldMapManager.MapLayerRegistry["chunks"] = typeof(FastPageMapLayer);
-        worldMapManager.LayerGroupPositions["chunks"] = 0.0;
+        if (TryInstallMapperRenderLayer(worldMapManager, recreateFastMapLayer))
+        {
+            SyncTerrainSamplerOverlayLayers(worldMapManager, recreateFastMapLayer);
+            return;
+        }
+
+        worldMapManager.MapLayerRegistry[TerrainLayerRegistryCode] = typeof(FastPageMapLayer);
+        worldMapManager.LayerGroupPositions[TerrainLayerRegistryCode] = 0.0;
 
         for (int i = 0; i < worldMapManager.MapLayers.Count; i++)
         {
             MapLayer layer = worldMapManager.MapLayers[i];
-            if (layer is ChunkMapLayer || (recreateFastMapLayer && layer is FastPageMapLayer))
+            if (layer.GetType() == typeof(ChunkMapLayer) || (recreateFastMapLayer && layer is FastPageMapLayer))
             {
                 layer.OnShutDown();
                 layer.Dispose();
@@ -245,6 +253,171 @@ public sealed class FastMapModSystem : ModSystem
                 worldMapManager.MapLayers[i] = replacement;
             }
         }
+
+        SyncTerrainSamplerOverlayLayers(worldMapManager, recreateFastMapLayer);
+    }
+
+    private void SyncTerrainSamplerOverlayLayers(WorldMapManager worldMapManager, bool recreateExisting)
+    {
+        if (capi == null)
+        {
+            return;
+        }
+
+        SyncTerrainSamplerOverlayLayer<FastMapRainfallLayer>(
+            worldMapManager,
+            "fastmap-rainfall",
+            0.15,
+            Config.EnableTerrainSamplerRainfallLayer,
+            recreateExisting);
+        SyncTerrainSamplerOverlayLayer<FastMapTemperatureLayer>(
+            worldMapManager,
+            "fastmap-temperature",
+            0.16,
+            Config.EnableTerrainSamplerTemperatureLayer,
+            recreateExisting);
+        SyncTerrainSamplerOverlayLayer<FastMapForestDensityLayer>(
+            worldMapManager,
+            "fastmap-forest-density",
+            0.17,
+            Config.EnableTerrainSamplerForestDensityLayer,
+            recreateExisting);
+        SyncTerrainSamplerOverlayLayer<FastMapShrubDensityLayer>(
+            worldMapManager,
+            "fastmap-shrub-density",
+            0.18,
+            Config.EnableTerrainSamplerShrubDensityLayer,
+            recreateExisting);
+    }
+
+    private void SyncTerrainSamplerOverlayLayer<T>(
+        WorldMapManager worldMapManager,
+        string code,
+        double position,
+        bool enabled,
+        bool recreateExisting) where T : MapLayer
+    {
+        if (enabled)
+        {
+            worldMapManager.MapLayerRegistry[code] = typeof(T);
+            worldMapManager.LayerGroupPositions[code] = position;
+            int existingIndex = FindLayerIndex<T>(worldMapManager);
+
+            if (existingIndex >= 0)
+            {
+                if (!recreateExisting)
+                {
+                    return;
+                }
+
+                MapLayer oldLayer = worldMapManager.MapLayers[existingIndex];
+                oldLayer.OnShutDown();
+                oldLayer.Dispose();
+                MapLayer replacement = (MapLayer)Activator.CreateInstance(typeof(T), capi!, worldMapManager)!;
+                replacement.OnLoaded();
+                worldMapManager.MapLayers[existingIndex] = replacement;
+                return;
+            }
+
+            if (worldMapManager.MapLayers.Count > 0)
+            {
+                MapLayer layer = (MapLayer)Activator.CreateInstance(typeof(T), capi!, worldMapManager)!;
+                layer.OnLoaded();
+                worldMapManager.MapLayers.Add(layer);
+            }
+
+            return;
+        }
+
+        worldMapManager.MapLayerRegistry.Remove(code);
+        worldMapManager.LayerGroupPositions.Remove(code);
+
+        int index = FindLayerIndex<T>(worldMapManager);
+        if (index >= 0)
+        {
+            MapLayer oldLayer = worldMapManager.MapLayers[index];
+            oldLayer.OnShutDown();
+            oldLayer.Dispose();
+            worldMapManager.MapLayers.RemoveAt(index);
+        }
+    }
+
+    private bool TryInstallMapperRenderLayer(WorldMapManager worldMapManager, bool recreateFastMapLayer)
+    {
+        if (!worldMapManager.MapLayerRegistry.TryGetValue(TerrainLayerRegistryCode, out Type? terrainLayerType)
+            || terrainLayerType.FullName != MapperChunkMapLayerFullName)
+        {
+            return false;
+        }
+
+        int fastMapIndex = FindFastMapLayerIndex(worldMapManager);
+        if (fastMapIndex >= 0)
+        {
+            if (!recreateFastMapLayer)
+            {
+                return true;
+            }
+
+            MapLayer oldLayer = worldMapManager.MapLayers[fastMapIndex];
+            oldLayer.OnShutDown();
+            oldLayer.Dispose();
+            FastPageMapLayer replacement = new(capi!, worldMapManager);
+            replacement.OnLoaded();
+            worldMapManager.MapLayers[fastMapIndex] = replacement;
+            return true;
+        }
+
+        if (worldMapManager.MapLayers.Count == 0)
+        {
+            return true;
+        }
+
+        int mapperIndex = FindLayerIndexByFullName(worldMapManager, MapperChunkMapLayerFullName);
+        int insertIndex = mapperIndex >= 0 ? mapperIndex + 1 : worldMapManager.MapLayers.Count;
+        FastPageMapLayer fastMapLayer = new(capi!, worldMapManager);
+        fastMapLayer.OnLoaded();
+        worldMapManager.MapLayers.Insert(insertIndex, fastMapLayer);
+        capi!.Logger.Notification("[FastMap] Mapper chunk layer detected; FastMap installed as terrain render layer while Mapper keeps map state.");
+        return true;
+    }
+
+    private static int FindFastMapLayerIndex(WorldMapManager worldMapManager)
+    {
+        for (int i = 0; i < worldMapManager.MapLayers.Count; i++)
+        {
+            if (worldMapManager.MapLayers[i] is FastPageMapLayer)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private static int FindLayerIndexByFullName(WorldMapManager worldMapManager, string fullName)
+    {
+        for (int i = 0; i < worldMapManager.MapLayers.Count; i++)
+        {
+            if (worldMapManager.MapLayers[i].GetType().FullName == fullName)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private static int FindLayerIndex<T>(WorldMapManager worldMapManager) where T : MapLayer
+    {
+        for (int i = 0; i < worldMapManager.MapLayers.Count; i++)
+        {
+            if (worldMapManager.MapLayers[i] is T)
+            {
+                return i;
+            }
+        }
+
+        return -1;
     }
 
     public override void Dispose()

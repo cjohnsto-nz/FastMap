@@ -107,6 +107,38 @@
       "title": "Experimental"
     },
     {
+      "code": "EnableTerrainSamplerRainfallLayer",
+      "type": "boolean",
+      "default": false,
+      "clientSide": true,
+      "ingui": "Rainfall map layer",
+      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler rainfall values. Requires Terrain Sampler column sample support."
+    },
+    {
+      "code": "EnableTerrainSamplerTemperatureLayer",
+      "type": "boolean",
+      "default": false,
+      "clientSide": true,
+      "ingui": "Temperature map layer",
+      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler temperature values. Requires Terrain Sampler column sample support."
+    },
+    {
+      "code": "EnableTerrainSamplerForestDensityLayer",
+      "type": "boolean",
+      "default": false,
+      "clientSide": true,
+      "ingui": "Forest density map layer",
+      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler forest density values. Requires Terrain Sampler column sample support."
+    },
+    {
+      "code": "EnableTerrainSamplerShrubDensityLayer",
+      "type": "boolean",
+      "default": false,
+      "clientSide": true,
+      "ingui": "Shrub density map layer",
+      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler shrub density values. Requires Terrain Sampler column sample support."
+    },
+    {
       "code": "EnableTerrainSamplerFallbackMaps",
       "type": "boolean",
       "default": false,
