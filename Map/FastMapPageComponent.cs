@@ -1,3 +1,4 @@
+using System;
 using Vintagestory.API.Client;
 using Vintagestory.API.MathTools;
 using Vintagestory.GameContent;
@@ -169,13 +170,23 @@ internal sealed class FastMapPageComponent : MapComponent
         }
 
         map.TranslateWorldPosToViewPos(worldPos, ref viewPos);
+        Vec2f bottomRightViewPos = new();
+        map.TranslateWorldPosToViewPos(new Vec3d(worldPos.X + PageSize, 0, worldPos.Z + PageSize), ref bottomRightViewPos);
+
+        float x1 = (float)Math.Floor(map.Bounds.renderX + viewPos.X);
+        float y1 = (float)Math.Floor(map.Bounds.renderY + viewPos.Y);
+        float x2 = (float)Math.Ceiling(map.Bounds.renderX + bottomRightViewPos.X);
+        float y2 = (float)Math.Ceiling(map.Bounds.renderY + bottomRightViewPos.Y);
+        float width = Math.Max(1f, x2 - x1);
+        float height = Math.Max(1f, y2 - y1);
+
         capi.Render.Render2DTexture(
             visibleChunksMesh,
             textureId,
-            (float)(int)(map.Bounds.renderX + viewPos.X),
-            (float)(int)(map.Bounds.renderY + viewPos.Y),
-            (float)(int)(PageSize * map.ZoomLevel),
-            (float)(int)(PageSize * map.ZoomLevel),
+            x1,
+            y1,
+            width,
+            height,
             50f
         );
     }

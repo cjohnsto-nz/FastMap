@@ -13,6 +13,8 @@ public sealed class FastMapConfig
     public bool CleanupKeepLatestPageVersion { get; set; } = true;
     public bool EnableVanillaMapDbWriteback { get; set; } = false;
     public bool CleanupStaleVanillaMapDbSidecarsOnStartup { get; set; } = true;
+    public float WorldMapMinZoomLevel { get; set; } = 0.10f;
+    public float WorldMapMaxZoomLevel { get; set; } = 6.0f;
     public float ViewportLoadScale { get; set; } = 1.5f;
     public int PrewarmRadiusChunks { get; set; } = 16;
     public bool EnablePrewarm { get; set; } = true;
@@ -59,6 +61,9 @@ public sealed class FastMapConfig
     public void Normalize()
     {
         PageTextureBudget = Math.Clamp(PageTextureBudget, 16, 10000);
+        WorldMapMinZoomLevel = Math.Clamp(WorldMapMinZoomLevel, 0.01f, 0.25f);
+        WorldMapMaxZoomLevel = Math.Clamp(WorldMapMaxZoomLevel, 6.0f, 32.0f);
+        WorldMapMaxZoomLevel = Math.Max(WorldMapMaxZoomLevel, WorldMapMinZoomLevel);
         ViewportLoadScale = Math.Clamp(ViewportLoadScale, 1.0f, 4.0f);
         PrewarmRadiusChunks = Math.Clamp(PrewarmRadiusChunks, 0, 64);
         ExperimentalChunkDirtyRepairDelayMilliseconds = Math.Clamp(ExperimentalChunkDirtyRepairDelayMilliseconds, 0, 10000);
