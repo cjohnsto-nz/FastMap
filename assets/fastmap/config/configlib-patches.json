@@ -250,6 +250,27 @@
         "max": 120.0,
         "step": 1.0
       }
+    },
+    {
+      "code": "EnableHitchDiagnostics",
+      "type": "boolean",
+      "default": false,
+      "clientSide": true,
+      "ingui": "Log hitch diagnostics",
+      "comment": "Log slow FastMap tick/render/off-thread passes to client-main.log. Leave disabled outside diagnostics."
+    },
+    {
+      "code": "HitchDiagnosticThresholdMilliseconds",
+      "type": "integer",
+      "default": 100,
+      "clientSide": true,
+      "ingui": "Hitch threshold (ms)",
+      "comment": "Minimum FastMap pass duration to log when hitch diagnostics are enabled.",
+      "range": {
+        "min": 16,
+        "max": 5000,
+        "step": 10
+      }
     }
   ]
 }

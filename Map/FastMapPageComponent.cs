@@ -14,7 +14,7 @@ internal sealed class FastMapPageComponent : MapComponent
 
     private readonly Vec3d worldPos;
     private Vec2f viewPos = new();
-    private readonly int[] pixels = new int[PixelCount];
+    private int[]? pixels;
     private readonly uint[] validRows = new uint[ChunksPerPage];
     private LoadedTexture? texture;
     private FastMapAtlasSlot? atlasSlot;
@@ -36,6 +36,8 @@ internal sealed class FastMapPageComponent : MapComponent
     public LoadedTexture? Texture => texture;
 
     public bool HasGpuTexture => atlasSlot != null || (texture != null && !texture.Disposed);
+
+    public bool HasPixelBuffer => pixels != null;
 
     public long LastTouchedMs { get; set; }
 
@@ -67,7 +69,16 @@ internal sealed class FastMapPageComponent : MapComponent
 
     public void ApplySnapshot(FastMapPageSnapshot snapshot)
     {
-        System.Array.Copy(snapshot.Pixels, pixels, pixels.Length);
+        if (snapshot.TransferPixelsToPage)
+        {
+            pixels = snapshot.Pixels;
+        }
+        else
+        {
+            int[] pagePixels = EnsurePixelBuffer();
+            System.Array.Copy(snapshot.Pixels, pagePixels, pagePixels.Length);
+        }
+
         System.Array.Copy(snapshot.ValidRows, validRows, validRows.Length);
         visibleChunksMeshDirty = true;
     }
@@ -81,12 +92,13 @@ internal sealed class FastMapPageComponent : MapComponent
             return;
         }
 
+        int[] pagePixels = EnsurePixelBuffer();
         int dstX = localChunkX * ChunkSize;
         int dstY = localChunkZ * ChunkSize;
 
         for (int row = 0; row < ChunkSize; row++)
         {
-            System.Array.Copy(tilePixels, row * ChunkSize, pixels, (dstY + row) * PageSize + dstX, ChunkSize);
+            System.Array.Copy(tilePixels, row * ChunkSize, pagePixels, (dstY + row) * PageSize + dstX, ChunkSize);
         }
 
         uint bit = 1u << localChunkX;
@@ -99,16 +111,17 @@ internal sealed class FastMapPageComponent : MapComponent
 
     public FastMapPageSnapshot CreateSnapshot()
     {
-        int[] pixelCopy = new int[pixels.Length];
+        int[] pagePixels = EnsurePixelBuffer();
+        int[] pixelCopy = new int[pagePixels.Length];
         uint[] validCopy = new uint[validRows.Length];
-        System.Array.Copy(pixels, pixelCopy, pixels.Length);
+        System.Array.Copy(pagePixels, pixelCopy, pagePixels.Length);
         System.Array.Copy(validRows, validCopy, validRows.Length);
         return new FastMapPageSnapshot(PageKey, validCopy, pixelCopy);
     }
 
     public void Upload()
     {
-        if (!HasAnyValidChunks)
+        if (!HasAnyValidChunks || pixels == null)
         {
             return;
         }
@@ -126,7 +139,7 @@ internal sealed class FastMapPageComponent : MapComponent
 
     public void Upload(FastMapTextureAtlas atlas)
     {
-        if (!HasAnyValidChunks)
+        if (!HasAnyValidChunks || pixels == null)
         {
             return;
         }
@@ -145,6 +158,11 @@ internal sealed class FastMapPageComponent : MapComponent
         }
 
         RefreshVisibleChunksMesh();
+    }
+
+    public void ReleasePixelBuffer()
+    {
+        pixels = null;
     }
 
     public override void Render(GuiElementMap map, float dt)
@@ -259,6 +277,12 @@ internal sealed class FastMapPageComponent : MapComponent
         }
 
         visibleChunksMesh = capi.Render.UploadMesh(mesh);
+    }
+
+    private int[] EnsurePixelBuffer()
+    {
+        pixels ??= new int[PixelCount];
+        return pixels;
     }
 
     private int CountValidRuns()

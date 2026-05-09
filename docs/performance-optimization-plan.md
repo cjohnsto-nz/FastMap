@@ -109,6 +109,36 @@ Release interpretation:
 - Verification on 2026-05-09: `dotnet build -c Release` and `dotnet build -c Debug` both pass with `0` warnings. The Release `FastMap.dll` string scan found no `FastMapProfilingModSystem`, `fastmapprofile`, profiling patch, or `server_worldgen_delegate` strings, and packaged `modinfo.json` has `"side": "Client"`.
 - Re-enable instructions live in `docs/profiling.md`, including the extra temporary steps needed for full client + server profiling.
 
+### Hitch Diagnostics
+
+Status: Starting. Last updated: 2026-05-09.
+
+Observed issue:
+
+- With only FastMap enabled, while the player stands still, the framerate reliably dips roughly every `30-50` seconds for about `500 ms`.
+- The issue does not occur without FastMap.
+
+Initial interpretation:
+
+- The cadence does not directly match the obvious FastMap intervals: prewarm is `2s`, page flush is `5s`, eviction checks are `1s`, and stats are disabled by default.
+- The first diagnostic pass should identify whether the hitch is in FastMap `OnTick`, `Render`, or `OnOffThreadTick`, and whether it correlates with pending saves, queued repairs, uploads, page loads, or cache state.
+
+Implemented diagnostic:
+
+- `EnableHitchDiagnostics`, default `false`.
+- `HitchDiagnosticThresholdMilliseconds`, default `100`.
+- When enabled, FastMap logs slow `tick`, `render`, and `offthread` passes to `client-main.log`, including page counts, queue depths, pending saves, disk/DB counters, generated/missing tile counts, upload count, and save count.
+- 2026-05-09 follow-up: latest diagnostics showed hitches with no repairs, generation, uploads, or pending saves, but with hundreds of page DB misses and very large GC deltas. A throttled page-load start experiment reduced responsiveness without fixing the hitch. The replacement fix is a page-level vanilla DB availability index so FastMap skips DB probes for pages that cannot contain vanilla tiles.
+
+Next run:
+
+- Enable `EnableHitchDiagnostics=true`.
+- Set `HitchDiagnosticThresholdMilliseconds=100` initially; lower to `50` if no line appears during visible hitches.
+- Compare `dbMisses` and `dbIndexSkips` in hitch diagnostics. A successful run should show empty regions moving from DB misses to index skips, with fewer GC-heavy hitches.
+- Stand still with only FastMap enabled until at least two hitches occur.
+- Inspect `client-main.log` for `[FastMap] Hitch diagnostic` lines.
+- If the diagnostic does not catch the hitch, the issue is likely outside FastMap's managed tick/render wrappers or below the chosen threshold, and the next step is to temporarily re-enable profiling or add a narrower renderer/GPU timing probe.
+
 ### Current Checkpoint: Page-Level Generation
 
 Status: Deferred while release hardening is active. Last updated: 2026-05-09.

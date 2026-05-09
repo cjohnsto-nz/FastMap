@@ -2,6 +2,9 @@ using FastMap.Cache;
 using FastMap.Config;
 using FastMap.Map;
 using System;
+#if FASTMAPHITCHDIAGNOSTICS
+using System.Diagnostics;
+#endif
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Datastructures;
@@ -18,6 +21,14 @@ public sealed class FastMapModSystem : ModSystem
 
     private ICoreClientAPI? capi;
     private Action? levelFinalizeHandler;
+#if FASTMAPHITCHDIAGNOSTICS
+    private long hitchDiagnosticListenerId;
+    private long lastHitchTickTimestamp;
+    private long lastHitchDiagnosticLogMs;
+    private int lastHitchGen0Collections;
+    private int lastHitchGen1Collections;
+    private int lastHitchGen2Collections;
+#endif
 
     public static FastMapModSystem? Instance { get; private set; }
 
@@ -34,6 +45,9 @@ public sealed class FastMapModSystem : ModSystem
         Config = FastMapConfig.Load(api);
         RegisterConfigReloadListeners(api);
         RegisterClientCommands(api);
+#if FASTMAPHITCHDIAGNOSTICS
+        RegisterHitchDiagnosticListener(api);
+#endif
         FastMapWorldMapGuard.Install(api.Logger);
 
         ReplaceTerrainLayerRegistration();
@@ -41,6 +55,18 @@ public sealed class FastMapModSystem : ModSystem
         levelFinalizeHandler = () => ReplaceTerrainLayerRegistration();
         api.Event.LevelFinalize += levelFinalizeHandler;
     }
+
+#if FASTMAPHITCHDIAGNOSTICS
+    private void RegisterHitchDiagnosticListener(ICoreClientAPI api)
+    {
+        if (!Config.EnableHitchDiagnostics || hitchDiagnosticListenerId != 0)
+        {
+            return;
+        }
+
+        hitchDiagnosticListenerId = api.Event.RegisterGameTickListener(OnHitchDiagnosticTick, 1);
+    }
+#endif
 
     private void RegisterConfigReloadListeners(ICoreAPI api)
     {
@@ -111,8 +137,83 @@ public sealed class FastMapModSystem : ModSystem
         }
 
         Config = FastMapConfig.Load(capi);
+#if FASTMAPHITCHDIAGNOSTICS
+        if (Config.EnableHitchDiagnostics)
+        {
+            RegisterHitchDiagnosticListener(capi);
+        }
+        else if (hitchDiagnosticListenerId != 0)
+        {
+            capi.Event.UnregisterGameTickListener(hitchDiagnosticListenerId);
+            hitchDiagnosticListenerId = 0;
+        }
+#endif
+
         ReplaceTerrainLayerRegistration(recreateFastMapLayer: true);
     }
+
+#if FASTMAPHITCHDIAGNOSTICS
+    private void OnHitchDiagnosticTick(float dt)
+    {
+        if (capi == null || !Config.EnableHitchDiagnostics)
+        {
+            return;
+        }
+
+        MarkFrameProfiler("fastmap-app-hitch-check-begin");
+        long dtMs = (long)Math.Round(dt * 1000f);
+        long now = Stopwatch.GetTimestamp();
+        long previous = lastHitchTickTimestamp;
+        lastHitchTickTimestamp = now;
+
+        long wallMs = previous == 0 ? 0 : (long)((now - previous) * 1000.0 / Stopwatch.Frequency);
+        long elapsedMs = Math.Max(dtMs, wallMs);
+        if (elapsedMs < Config.HitchDiagnosticThresholdMilliseconds)
+        {
+            MarkFrameProfiler("fastmap-app-hitch-check-end");
+            return;
+        }
+
+        long nowMs = capi.ElapsedMilliseconds;
+        if (nowMs - lastHitchDiagnosticLogMs < 1000)
+        {
+            MarkFrameProfiler("fastmap-app-hitch-check-end");
+            return;
+        }
+
+        lastHitchDiagnosticLogMs = nowMs;
+        int gen0 = GC.CollectionCount(0);
+        int gen1 = GC.CollectionCount(1);
+        int gen2 = GC.CollectionCount(2);
+        int gen0Delta = gen0 - lastHitchGen0Collections;
+        int gen1Delta = gen1 - lastHitchGen1Collections;
+        int gen2Delta = gen2 - lastHitchGen2Collections;
+        lastHitchGen0Collections = gen0;
+        lastHitchGen1Collections = gen1;
+        lastHitchGen2Collections = gen2;
+
+        capi.Logger.Warning(
+            "[FastMap] App hitch diagnostic elapsedMs={0}, dtMs={1}, wallMs={2}, gc0Delta={3}, gc1Delta={4}, gc2Delta={5}, managedMemoryMb={6}",
+            elapsedMs,
+            dtMs,
+            wallMs,
+            gen0Delta,
+            gen1Delta,
+            gen2Delta,
+            GC.GetTotalMemory(false) / (1024 * 1024));
+        MarkFrameProfiler("fastmap-app-hitch-check-end");
+    }
+
+    private void MarkFrameProfiler(string code)
+    {
+        if (capi == null || !Config.EnableHitchDiagnostics || !capi.World.FrameProfiler.Enabled)
+        {
+            return;
+        }
+
+        capi.World.FrameProfiler.Mark(code);
+    }
+#endif
 
     private void ReplaceTerrainLayerRegistration(bool recreateFastMapLayer = false)
     {
@@ -153,6 +254,14 @@ public sealed class FastMapModSystem : ModSystem
             capi.Event.LevelFinalize -= levelFinalizeHandler;
         }
 
+#if FASTMAPHITCHDIAGNOSTICS
+        if (capi != null && hitchDiagnosticListenerId != 0)
+        {
+            capi.Event.UnregisterGameTickListener(hitchDiagnosticListenerId);
+        }
+
+        hitchDiagnosticListenerId = 0;
+#endif
         levelFinalizeHandler = null;
         capi = null;
         if (Instance == this)

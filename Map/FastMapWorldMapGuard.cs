@@ -21,6 +21,20 @@ internal static class FastMapWorldMapGuard
     private static bool loggedEmptyLayerGroups;
     private static bool loggedCustomZoomLimit;
     private static ILogger? guardLogger;
+    private static FieldInfo? waypointField;
+    private static FieldInfo? waypointLayerField;
+    private static FieldInfo? waypointMouseOverField;
+    private static FieldInfo? waypointColorField;
+    private static FieldInfo? waypointMvMatField;
+    private static Type? oreMapComponentType;
+    private static FieldInfo? oreReadingField;
+    private static FieldInfo? oreLayerField;
+    private static FieldInfo? oreMouseOverField;
+    private static FieldInfo? oreColorField;
+    private static FieldInfo? oreMvMatField;
+    private static FieldInfo? orePositionField;
+    private static FieldInfo? oreTextureField;
+    private static FieldInfo? oreQuadModelField;
 
     public static void Install(ILogger logger)
     {
@@ -39,7 +53,9 @@ internal static class FastMapWorldMapGuard
             MethodInfo? zoomAddMethod = guiMapType?.GetMethod("ZoomAdd", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             Type? waypointComponentType = AccessTools.TypeByName("Vintagestory.GameContent.WaypointMapComponent");
             MethodInfo? waypointRenderMethod = waypointComponentType?.GetMethod("Render", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-            Type? oreMapComponentType = AccessTools.TypeByName("Vintagestory.GameContent.OreMapComponent");
+            oreMapComponentType = AccessTools.TypeByName("Vintagestory.GameContent.OreMapComponent");
+            Type? oreMapLayerType = AccessTools.TypeByName("Vintagestory.GameContent.OreMapLayer");
+            Type? propickReadingType = AccessTools.TypeByName("Vintagestory.GameContent.PropickReading");
             MethodInfo? oreMapRenderMethod = oreMapComponentType?.GetMethod("Render", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             if (targetMethod == null)
             {
@@ -64,6 +80,20 @@ internal static class FastMapWorldMapGuard
                 logger.Warning("[FastMap] Ore map zoom patch target not found.");
                 return;
             }
+
+            waypointField = AccessTools.Field(typeof(WaypointMapComponent), "waypoint");
+            waypointLayerField = AccessTools.Field(typeof(WaypointMapComponent), "wpLayer");
+            waypointMouseOverField = AccessTools.Field(typeof(WaypointMapComponent), "mouseOver");
+            waypointColorField = AccessTools.Field(typeof(WaypointMapComponent), "color");
+            waypointMvMatField = AccessTools.Field(typeof(WaypointMapComponent), "mvMat");
+            oreReadingField = oreMapComponentType == null ? null : AccessTools.Field(oreMapComponentType, "reading");
+            oreLayerField = oreMapComponentType == null ? null : AccessTools.Field(oreMapComponentType, "oreLayer");
+            oreMouseOverField = oreMapComponentType == null ? null : AccessTools.Field(oreMapComponentType, "mouseOver");
+            oreColorField = oreMapComponentType == null ? null : AccessTools.Field(oreMapComponentType, "color");
+            oreMvMatField = oreMapComponentType == null ? null : AccessTools.Field(oreMapComponentType, "mvMat");
+            orePositionField = propickReadingType == null ? null : AccessTools.Field(propickReadingType, "Position");
+            oreTextureField = oreMapLayerType == null ? null : AccessTools.Field(oreMapLayerType, "oremapTexture");
+            oreQuadModelField = oreMapLayerType == null ? null : AccessTools.Field(oreMapLayerType, "quadModel");
 
             try
             {
@@ -197,16 +227,24 @@ internal static class FastMapWorldMapGuard
         }
 
         Vec2f viewPos = new();
-        Waypoint waypoint = (Waypoint)AccessTools.Field(typeof(WaypointMapComponent), "waypoint").GetValue(waypointComponent);
-        WaypointMapLayer wpLayer = (WaypointMapLayer)AccessTools.Field(typeof(WaypointMapComponent), "wpLayer").GetValue(waypointComponent);
-        bool mouseOver = (bool)AccessTools.Field(typeof(WaypointMapComponent), "mouseOver").GetValue(waypointComponent);
-        Vec4f color = (Vec4f)AccessTools.Field(typeof(WaypointMapComponent), "color").GetValue(waypointComponent);
-        Matrixf mvMat = (Matrixf)AccessTools.Field(typeof(WaypointMapComponent), "mvMat").GetValue(waypointComponent);
+        object? waypointValue = waypointField?.GetValue(waypointComponent);
+        object? wpLayerValue = waypointLayerField?.GetValue(waypointComponent);
+        object? mouseOverValue = waypointMouseOverField?.GetValue(waypointComponent);
+        object? colorValue = waypointColorField?.GetValue(waypointComponent);
+        object? mvMatValue = waypointMvMatField?.GetValue(waypointComponent);
+        if (waypointValue is not Waypoint waypoint
+            || wpLayerValue is not WaypointMapLayer wpLayer
+            || mouseOverValue is not bool mouseOver
+            || colorValue is not Vec4f color
+            || mvMatValue is not Matrixf mvMat)
+        {
+            return true;
+        }
 
         map.TranslateWorldPosToViewPos(waypoint.Position, ref viewPos);
         if (waypoint.Pinned)
         {
-            map.Api.Render.PushScissor((ElementBounds)null, false);
+            map.Api.Render.PushScissor((ElementBounds)null!, false);
             map.ClampButPreserveAngle(ref viewPos, 2);
         }
         else if (viewPos.X < -10f || viewPos.Y < -10f || viewPos.X > map.Bounds.OuterWidth + 10.0 || viewPos.Y > map.Bounds.OuterHeight + 10.0)
@@ -227,9 +265,14 @@ internal static class FastMapWorldMapGuard
         float clampedInverseZoom = Math.Min(inverseZoom, 2f);
         float sizeAdjust = (mouseOver ? 6f : 0f) - 1.5f * Math.Max(1f, clampedInverseZoom);
 
-        if (!wpLayer.texturesByIcon.TryGetValue(waypoint.Icon, out LoadedTexture value))
+        LoadedTexture? value = null;
+        if (wpLayer.texturesByIcon.TryGetValue(waypoint.Icon, out LoadedTexture? iconTexture))
         {
-            wpLayer.texturesByIcon.TryGetValue("circle", out value);
+            value = iconTexture;
+        }
+        else if (wpLayer.texturesByIcon.TryGetValue("circle", out LoadedTexture? fallbackTexture))
+        {
+            value = fallbackTexture;
         }
 
         if (value != null)
@@ -259,27 +302,33 @@ internal static class FastMapWorldMapGuard
 
     private static bool OreMapRenderPrefix(object __instance, GuiElementMap map, float dt)
     {
-        Type? oreMapComponentType = AccessTools.TypeByName("Vintagestory.GameContent.OreMapComponent");
-        Type? oreMapLayerType = AccessTools.TypeByName("Vintagestory.GameContent.OreMapLayer");
-        Type? propickReadingType = AccessTools.TypeByName("Vintagestory.GameContent.PropickReading");
-        if (oreMapComponentType == null || oreMapLayerType == null || propickReadingType == null || !oreMapComponentType.IsInstanceOfType(__instance))
+        if (oreMapComponentType == null || !oreMapComponentType.IsInstanceOfType(__instance))
         {
             return true;
         }
 
         Vec2f viewPos = new();
-        object? reading = AccessTools.Field(oreMapComponentType, "reading").GetValue(__instance);
-        object? oreLayer = AccessTools.Field(oreMapComponentType, "oreLayer").GetValue(__instance);
-        bool mouseOver = (bool)AccessTools.Field(oreMapComponentType, "mouseOver").GetValue(__instance);
-        Vec4f color = (Vec4f)AccessTools.Field(oreMapComponentType, "color").GetValue(__instance);
-        Matrixf mvMat = (Matrixf)AccessTools.Field(oreMapComponentType, "mvMat").GetValue(__instance);
+        object? reading = oreReadingField?.GetValue(__instance);
+        object? oreLayer = oreLayerField?.GetValue(__instance);
+        object? mouseOverValue = oreMouseOverField?.GetValue(__instance);
+        object? colorValue = oreColorField?.GetValue(__instance);
+        object? mvMatValue = oreMvMatField?.GetValue(__instance);
 
-        if (reading == null || oreLayer == null)
+        if (reading == null
+            || oreLayer == null
+            || mouseOverValue is not bool mouseOver
+            || colorValue is not Vec4f color
+            || mvMatValue is not Matrixf mvMat)
         {
             return true;
         }
 
-        Vec3d position = (Vec3d)AccessTools.Field(propickReadingType, "Position").GetValue(reading);
+        object? positionValue = orePositionField?.GetValue(reading);
+        if (positionValue is not Vec3d position)
+        {
+            return true;
+        }
+
         map.TranslateWorldPosToViewPos(position, ref viewPos);
         if (viewPos.X < -10f || viewPos.Y < -10f || viewPos.X > map.Bounds.OuterWidth + 10.0 || viewPos.Y > map.Bounds.OuterHeight + 10.0)
         {
@@ -295,7 +344,7 @@ internal static class FastMapWorldMapGuard
         engineShader.Uniform("applyColor", 0);
         engineShader.Uniform("noTexture", 0f);
 
-        LoadedTexture? oreTexture = AccessTools.Field(oreMapLayerType, "oremapTexture").GetValue(oreLayer) as LoadedTexture;
+        LoadedTexture? oreTexture = oreTextureField?.GetValue(oreLayer) as LoadedTexture;
         if (oreTexture == null)
         {
             return false;
@@ -313,10 +362,16 @@ internal static class FastMapWorldMapGuard
         Matrixf shadowMat = mvMat.Clone().Scale(1.25f, 1.25f, 1.25f);
         engineShader.Uniform("rgbaIn", new Vec4f(0f, 0f, 0f, 0.7f));
         engineShader.UniformMatrix("modelViewMatrix", shadowMat.Values);
-        api.Render.RenderMesh((MeshRef)AccessTools.Field(oreMapLayerType, "quadModel").GetValue(oreLayer));
+        object? quadModelValue = oreQuadModelField?.GetValue(oreLayer);
+        if (quadModelValue is not MeshRef quadModel)
+        {
+            return false;
+        }
+
+        api.Render.RenderMesh(quadModel);
         engineShader.Uniform("rgbaIn", color);
         engineShader.UniformMatrix("modelViewMatrix", mvMat.Values);
-        api.Render.RenderMesh((MeshRef)AccessTools.Field(oreMapLayerType, "quadModel").GetValue(oreLayer));
+        api.Render.RenderMesh(quadModel);
         return false;
     }
 }

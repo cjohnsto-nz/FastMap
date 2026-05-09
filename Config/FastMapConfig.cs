@@ -11,7 +11,7 @@ public sealed class FastMapConfig
     public bool UseHighCompressionCache { get; set; } = false;
     public bool EnableTextureAtlas { get; set; } = true;
     public bool CleanupKeepLatestPageVersion { get; set; } = true;
-    public bool EnableVanillaMapDbWriteback { get; set; } = false;
+    public bool EnableVanillaMapDbWriteback { get; set; } = true;
     public bool CleanupStaleVanillaMapDbSidecarsOnStartup { get; set; } = true;
     public float WorldMapMinZoomLevel { get; set; } = 0.10f;
     public float WorldMapMaxZoomLevel { get; set; } = 6.0f;
@@ -34,6 +34,8 @@ public sealed class FastMapConfig
     public int PageFlushThreshold { get; set; } = 64;
     public bool LogStats { get; set; } = false;
     public float LogStatsIntervalSeconds { get; set; } = 5.0f;
+    public bool EnableHitchDiagnostics { get; set; } = false;
+    public int HitchDiagnosticThresholdMilliseconds { get; set; } = 100;
     public bool EnableProfiling { get; set; } = false;
     public bool AutoStartProfilingOnStartup { get; set; } = false;
     public int ProfileAutoFlushIntervalSeconds { get; set; } = 5;
@@ -78,6 +80,7 @@ public sealed class FastMapConfig
         PageFlushIntervalSeconds = Math.Clamp(PageFlushIntervalSeconds, 0.5f, 120f);
         PageFlushThreshold = Math.Clamp(PageFlushThreshold, 1, 10000);
         LogStatsIntervalSeconds = Math.Clamp(LogStatsIntervalSeconds, 1f, 120f);
+        HitchDiagnosticThresholdMilliseconds = Math.Clamp(HitchDiagnosticThresholdMilliseconds, 16, 5000);
         ProfileAutoFlushIntervalSeconds = Math.Clamp(ProfileAutoFlushIntervalSeconds, 1, 120);
     }
 }

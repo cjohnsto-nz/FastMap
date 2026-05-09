@@ -4,11 +4,12 @@ namespace FastMap.Map;
 
 internal sealed class FastMapPageSnapshot
 {
-    public FastMapPageSnapshot(FastVec2i pageKey, uint[] validRows, int[] pixels)
+    public FastMapPageSnapshot(FastVec2i pageKey, uint[] validRows, int[] pixels, bool transferPixelsToPage = false)
     {
         PageKey = pageKey;
         ValidRows = validRows;
         Pixels = pixels;
+        TransferPixelsToPage = transferPixelsToPage;
     }
 
     public FastVec2i PageKey { get; }
@@ -16,6 +17,8 @@ internal sealed class FastMapPageSnapshot
     public uint[] ValidRows { get; }
 
     public int[] Pixels { get; }
+
+    public bool TransferPixelsToPage { get; }
 
     public bool HasAnyValidChunks
     {

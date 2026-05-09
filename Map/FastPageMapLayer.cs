@@ -15,6 +15,7 @@ using Vintagestory.API.Common;
 using Vintagestory.API.Config;
 using Vintagestory.API.MathTools;
 using Vintagestory.API.Util;
+using Vintagestory.Common.Database;
 using Vintagestory.GameContent;
 
 namespace FastMap.Map;
@@ -25,6 +26,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private const int ChunksPerPage = FastMapPageComponent.ChunksPerPage;
     private const int TilePixelCount = ChunkSize * ChunkSize;
     private const int NativeDbQueryBatchSize = 512;
+    private const int PageLoadsPerTask = 64;
     private static readonly FastVec2i[] MinimalDirtyRepairOffsets =
     {
         new(0, 0),
@@ -61,6 +63,13 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private readonly ConcurrentQueue<FastMapPagePatch> readyPatches = new();
     private readonly HashSet<FastVec2i> chunksKnownValid = new();
     private readonly object chunkValidityLock = new();
+#if FASTMAPHITCHDIAGNOSTICS
+    private readonly object hitchDiagnosticsLock = new();
+    private readonly Dictionary<string, long> queuedRepairDiagnostics = new();
+    private readonly Dictionary<string, long> processedRepairDiagnostics = new();
+    private readonly Dictionary<string, long> generatedRepairDiagnostics = new();
+    private readonly Dictionary<string, long> missingRepairDiagnostics = new();
+#endif
 
     private readonly object dbLock = new();
     private readonly SemaphoreSlim nativeDbPageBuildSemaphore;
@@ -72,6 +81,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private string? mapDbPath;
     private bool mapDbWritable;
     private HashSet<ulong>? mapDbKnownPositions;
+    private HashSet<FastVec2i>? mapDbKnownPageKeys;
     private IWorldChunk[] chunksTmp = Array.Empty<IWorldChunk>();
     private Dictionary<string, int> colorsByCode = new();
     private int[] blockColorByBlockId = Array.Empty<int>();
@@ -89,11 +99,25 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private float evictAccum;
     private float statsAccum;
     private int activePageLoadTasks;
+#if FASTMAPHITCHDIAGNOSTICS
+    private long lastHitchDiagnosticLogMs;
+    private int lastHitchGen0Collections;
+    private int lastHitchGen1Collections;
+    private int lastHitchGen2Collections;
+    private long lastHitchTickTimestamp;
+    private long lastHitchRenderTimestamp;
+#endif
 
     private long pageDiskHits;
     private long pageDiskMisses;
+    private long pageDiskSkippedByIndex;
     private long pageDbHits;
     private long pageDbMisses;
+    private long pageDbSkippedByIndex;
+    private long pageLoadBatchesStarted;
+    private long pageLoadItemsProcessed;
+    private long pagePixelBuffersReleased;
+    private long pagePixelBufferReloads;
     private long pageUploads;
     private long pageSaves;
     private long generatedChunks;
@@ -190,54 +214,121 @@ public sealed class FastPageMapLayer : RGBMapLayer
             return;
         }
 
+#if FASTMAPHITCHDIAGNOSTICS
+        Stopwatch? hitchStopwatch = StartHitchStopwatch();
+#endif
         workerAccum += dt;
         flushAccum += dt;
+#if FASTMAPHITCHDIAGNOSTICS
+        bool startedPageLoads = false;
+        bool processedRepairs = false;
+        bool flushedSaves = false;
+#endif
 
         if (workerAccum >= config.BackgroundWorkIntervalSeconds)
         {
             workerAccum = 0f;
             StartPageLoadTasks();
             ProcessChunkRepairs(config.MaxBackgroundTilesPerPass);
+#if FASTMAPHITCHDIAGNOSTICS
+            startedPageLoads = true;
+            processedRepairs = true;
+#endif
         }
 
         if (flushAccum >= config.PageFlushIntervalSeconds || PendingPageSaveCount() >= config.PageFlushThreshold)
         {
             flushAccum = 0f;
             FlushPendingSaves();
+#if FASTMAPHITCHDIAGNOSTICS
+            flushedSaves = true;
+#endif
         }
+
+#if FASTMAPHITCHDIAGNOSTICS
+        LogHitchDiagnostic(
+            hitchStopwatch,
+            "offthread",
+            $"startedPageLoads={startedPageLoads};processedRepairs={processedRepairs};flushedSaves={flushedSaves}");
+#endif
     }
 
     public override void OnTick(float dt)
     {
+#if FASTMAPHITCHDIAGNOSTICS
+        LogFrameGapDiagnostic(dt, "tick_gap");
+        LogWallClockGapDiagnostic(ref lastHitchTickTimestamp, "tick_wall_gap");
+#endif
         if (disposed)
         {
             return;
         }
 
+#if FASTMAPHITCHDIAGNOSTICS
+        MarkFrameProfiler("fastmap-tick-begin");
+        Stopwatch? hitchStopwatch = StartHitchStopwatch();
+#endif
         Stopwatch stopwatch = Stopwatch.StartNew();
         ProcessReadyPages(stopwatch);
+#if FASTMAPHITCHDIAGNOSTICS
+        MarkFrameProfiler("fastmap-ready-pages");
+#endif
         ProcessReadyPatches(stopwatch);
+#if FASTMAPHITCHDIAGNOSTICS
+        MarkFrameProfiler("fastmap-ready-patches");
+#endif
         ProcessQueuedPageUploads(stopwatch);
+#if FASTMAPHITCHDIAGNOSTICS
+        MarkFrameProfiler("fastmap-page-uploads");
+#endif
         PrewarmAroundPlayer(dt);
+#if FASTMAPHITCHDIAGNOSTICS
+        MarkFrameProfiler("fastmap-prewarm");
+#endif
         EvictPages(dt);
+#if FASTMAPHITCHDIAGNOSTICS
+        MarkFrameProfiler("fastmap-evict");
+#endif
         LogStats(dt);
+#if FASTMAPHITCHDIAGNOSTICS
+        MarkFrameProfiler("fastmap-stats");
+        LogHitchDiagnostic(hitchStopwatch, "tick");
+        MarkFrameProfiler("fastmap-tick-end");
+#endif
     }
 
     public override void Render(GuiElementMap mapElem, float dt)
     {
+#if FASTMAPHITCHDIAGNOSTICS
+        LogFrameGapDiagnostic(dt, "render_gap");
+        LogWallClockGapDiagnostic(ref lastHitchRenderTimestamp, "render_wall_gap");
+#endif
         if (disposed || !Active)
         {
             return;
         }
 
+#if FASTMAPHITCHDIAGNOSTICS
+        MarkFrameProfiler("fastmap-render-begin");
+        Stopwatch? hitchStopwatch = StartHitchStopwatch();
+        int renderedPages = 0;
+#endif
         foreach (FastVec2i pageKey in visiblePageKeys)
         {
             if (pages.TryGetValue(pageKey, out FastMapPageComponent? page) && page.HasGpuTexture)
             {
                 page.LastTouchedMs = capi.ElapsedMilliseconds;
                 page.Render(mapElem, dt);
+#if FASTMAPHITCHDIAGNOSTICS
+                renderedPages++;
+#endif
             }
         }
+
+#if FASTMAPHITCHDIAGNOSTICS
+        LogHitchDiagnostic(hitchStopwatch, "render", $"renderedPages={renderedPages}");
+        MarkFrameProfiler("fastmap-render-end");
+#endif
     }
 
     public override void OnMouseMoveClient(MouseEvent args, GuiElementMap mapElem, StringBuilder hoverText)
@@ -458,20 +549,37 @@ public sealed class FastPageMapLayer : RGBMapLayer
             return;
         }
 
-        while (Volatile.Read(ref activePageLoadTasks) < config.MaxParallelPageLoads && TryDequeuePageLoad(out FastVec2i pageKey))
+        while (Volatile.Read(ref activePageLoadTasks) < config.MaxParallelPageLoads && HasQueuedPageLoads())
         {
             Interlocked.Increment(ref activePageLoadTasks);
+            Interlocked.Increment(ref pageLoadBatchesStarted);
             Task.Run(() =>
             {
                 try
                 {
-                    ProcessPageLoad(pageKey);
+                    for (int i = 0; i < PageLoadsPerTask && TryDequeuePageLoad(out FastVec2i pageKey); i++)
+                    {
+                        ProcessPageLoad(pageKey);
+                        Interlocked.Increment(ref pageLoadItemsProcessed);
+                        if (disposed)
+                        {
+                            return;
+                        }
+                    }
                 }
                 finally
                 {
                     Interlocked.Decrement(ref activePageLoadTasks);
                 }
             });
+        }
+    }
+
+    private bool HasQueuedPageLoads()
+    {
+        lock (pageLoadLock)
+        {
+            return pageLoadQueue.Count > 0;
         }
     }
 
@@ -498,7 +606,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
 
         Stopwatch stopwatch = Stopwatch.StartNew();
-        if (pageDiskCache.TryLoad(pageKey, out FastMapPageSnapshot diskSnapshot))
+        bool diskMightContain = pageDiskCache.MightContain(pageKey);
+        if (diskMightContain && pageDiskCache.TryLoad(pageKey, out FastMapPageSnapshot diskSnapshot))
         {
             if (disposed)
             {
@@ -512,9 +621,16 @@ public sealed class FastPageMapLayer : RGBMapLayer
             return;
         }
 
-        Interlocked.Increment(ref pageDiskMisses);
+        if (diskMightContain)
+        {
+            Interlocked.Increment(ref pageDiskMisses);
+        }
+        else
+        {
+            Interlocked.Increment(ref pageDiskSkippedByIndex);
+        }
 
-        if (TryBuildPageFromDb(pageKey, out FastMapPageSnapshot dbSnapshot))
+        if (TryBuildPageFromDb(pageKey, out FastMapPageSnapshot dbSnapshot, out bool skippedByDbIndex))
         {
             if (disposed)
             {
@@ -536,9 +652,14 @@ public sealed class FastPageMapLayer : RGBMapLayer
             return;
         }
 
-        FastMapProfileRecorder.RecordClient("fastmap_page_load", pageKey.X, 0, pageKey.Y, stopwatch.Elapsed.TotalMilliseconds, detail: "miss");
+        string missDetail = skippedByDbIndex && !diskMightContain ? "indexskip" : "miss";
+        FastMapProfileRecorder.RecordClient("fastmap_page_load", pageKey.X, 0, pageKey.Y, stopwatch.Elapsed.TotalMilliseconds, detail: missDetail);
 
-        Interlocked.Increment(ref pageDbMisses);
+        if (!skippedByDbIndex)
+        {
+            Interlocked.Increment(ref pageDbMisses);
+        }
+
         Interlocked.Add(ref pageLoadMs, stopwatch.ElapsedMilliseconds);
         if (disposed)
         {
@@ -551,8 +672,17 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
     }
 
-    private bool TryBuildPageFromDb(FastVec2i pageKey, out FastMapPageSnapshot snapshot)
+    private bool TryBuildPageFromDb(FastVec2i pageKey, out FastMapPageSnapshot snapshot, out bool skippedByIndex)
     {
+        snapshot = null!;
+        skippedByIndex = false;
+        if (!MightMapDbContainPage(pageKey))
+        {
+            Interlocked.Increment(ref pageDbSkippedByIndex);
+            skippedByIndex = true;
+            return false;
+        }
+
         if (config.UseBatchedNativeDbPageQueries)
         {
             bool hasPage = TryBuildPageFromDbBatchedQuery(pageKey, out snapshot, out bool completed);
@@ -563,6 +693,15 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
 
         return TryBuildPageFromDbLegacy(pageKey, out snapshot);
+    }
+
+    private bool MightMapDbContainPage(FastVec2i pageKey)
+    {
+        lock (dbLock)
+        {
+            GetOrBuildMapDbKnownPositions();
+            return mapDbKnownPageKeys == null || mapDbKnownPageKeys.Contains(pageKey);
+        }
     }
 
     private bool TryBuildPageFromDbBatchedQuery(FastVec2i pageKey, out FastMapPageSnapshot snapshot, out bool completed)
@@ -719,6 +858,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         if (hasAny)
         {
             snapshot = new FastMapPageSnapshot(pageKey, validRows!, pixels!);
+            MarkMapDbPageKnown(pageKey);
         }
 
         if (profile)
@@ -814,6 +954,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         if (hasAny)
         {
             snapshot = new FastMapPageSnapshot(pageKey, validRows!, pixels!);
+            MarkMapDbPageKnown(pageKey);
         }
 
         if (profile)
@@ -890,15 +1031,20 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
 
         HashSet<ulong> positions = new();
+        HashSet<FastVec2i> pageKeys = new();
         using DbCommand command = connection.CreateCommand();
         command.CommandText = "SELECT position FROM mappiece";
         using DbDataReader reader = command.ExecuteReader();
         while (reader.Read())
         {
-            positions.Add(ReadDbPosition(reader["position"]));
+            ulong position = ReadDbPosition(reader["position"]);
+            positions.Add(position);
+            ChunkPos chunkPos = ChunkPos.FromChunkIndex_saveGamev2(position);
+            pageKeys.Add(PageKey(new FastVec2i(chunkPos.X, chunkPos.Z)));
         }
 
         mapDbKnownPositions = positions;
+        mapDbKnownPageKeys = pageKeys;
         if (profile)
         {
             FastMapProfileRecorder.RecordClient(
@@ -908,7 +1054,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 0,
                 FastMapProfileRecorder.ElapsedMilliseconds(indexStart),
                 positions.Count,
-                "positionCount");
+                "positionCount;pageCount=" + pageKeys.Count);
         }
 
         return mapDbKnownPositions;
@@ -1008,6 +1154,12 @@ public sealed class FastPageMapLayer : RGBMapLayer
             if (visiblePageKeys.Contains(snapshot.PageKey))
             {
                 UploadPage(page);
+                if (snapshot.TransferPixelsToPage && page.HasPixelBuffer)
+                {
+                    page.ReleasePixelBuffer();
+                    Interlocked.Increment(ref pagePixelBuffersReleased);
+                }
+
                 pagesNeedingUpload.Remove(snapshot.PageKey);
             }
         }
@@ -1035,10 +1187,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
             FastMapPageComponent page = GetOrCreatePage(pageKey);
             bool profile = FastMapProfileRecorder.ClientEnabled;
             long patchStart = profile ? FastMapProfileRecorder.Timestamp() : 0;
-            if (!page.HasAnyValidChunks && pageDiskCache.TryLoad(pageKey, out FastMapPageSnapshot snapshot))
+            if (!page.HasPixelBuffer && pageDiskCache.TryLoad(pageKey, out FastMapPageSnapshot snapshot))
             {
                 page.ApplySnapshot(snapshot);
                 MarkSnapshotChunksKnown(snapshot);
+                Interlocked.Increment(ref pagePixelBufferReloads);
             }
 
             page.SetChunk(patch.ChunkCoord, patch.Pixels);
@@ -1210,6 +1363,9 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 queuedRepairReasons[chunkCoord] = reason;
                 queuedRepairDueMs[chunkCoord] = dueMs;
                 EnqueueRepairForDueTime(chunkCoord, dueMs);
+#if FASTMAPHITCHDIAGNOSTICS
+                IncrementHitchDiagnosticReason(queuedRepairDiagnostics, reason);
+#endif
                 FastMapProfileRecorder.RecordClient("fastmap_chunk_repair_queued", chunkCoord.X, 0, chunkCoord.Y, detail: RepairDetail(reason, force), kind: "event", category: "fastmap_repair");
             }
             else
@@ -1323,10 +1479,16 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         for (int i = 0; i < maxChunks && TryDequeueRepair(out FastVec2i chunkCoord, out string repairReason); i++)
         {
+#if FASTMAPHITCHDIAGNOSTICS
+            IncrementHitchDiagnosticReason(processedRepairDiagnostics, repairReason);
+#endif
             IMapChunk mapChunk = api.World.BlockAccessor.GetMapChunk(chunkCoord.X, chunkCoord.Y);
             if (mapChunk == null)
             {
                 Interlocked.Increment(ref missingSourceChunks);
+#if FASTMAPHITCHDIAGNOSTICS
+                IncrementHitchDiagnosticReason(missingRepairDiagnostics, repairReason);
+#endif
                 FastMapProfileRecorder.RecordClient("fastmap_chunk_repair_missing_mapchunk", chunkCoord.X, 0, chunkCoord.Y, detail: repairReason, category: "fastmap_repair");
 
                 continue;
@@ -1338,6 +1500,9 @@ public sealed class FastPageMapLayer : RGBMapLayer
             if (pixels == null)
             {
                 Interlocked.Increment(ref missingSourceChunks);
+#if FASTMAPHITCHDIAGNOSTICS
+                IncrementHitchDiagnosticReason(missingRepairDiagnostics, repairReason);
+#endif
                 if (profile)
                 {
                     FastMapProfileRecorder.RecordClient(
@@ -1360,6 +1525,9 @@ public sealed class FastPageMapLayer : RGBMapLayer
             }
 
             Interlocked.Increment(ref generatedChunks);
+#if FASTMAPHITCHDIAGNOSTICS
+            IncrementHitchDiagnosticReason(generatedRepairDiagnostics, repairReason);
+#endif
             readyPatches.Enqueue(new FastMapPagePatch(chunkCoord, pixels));
             QueueTileSave(chunkCoord, pixels);
             if (profile)
@@ -1415,6 +1583,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void MarkSnapshotChunksKnown(FastMapPageSnapshot snapshot)
     {
+        MarkMapDbPageKnown(snapshot.PageKey);
         FastVec2i baseCoord = new(snapshot.PageKey.X * ChunksPerPage, snapshot.PageKey.Y * ChunksPerPage);
         for (int dz = 0; dz < ChunksPerPage; dz++)
         {
@@ -1473,6 +1642,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void QueueTileSave(FastVec2i chunkCoord, int[] pixels)
     {
+        MarkMapDbPageKnown(PageKey(chunkCoord));
         if (disposed || !mapDbWritable)
         {
             return;
@@ -1595,7 +1765,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         statsAccum = 0f;
         api.Logger.Notification(
-            "[FastMap] pages loaded={0}, visible={1}, queuedPages={2}, activeLoads={3}, readyPages={4}, readyPatches={5}, diskHits={6}, diskMisses={7}, dbHits={8}, dbMisses={9}, generated={10}, missing={11}, uploads={12}, saves={13}",
+            "[FastMap] pages loaded={0}, visible={1}, queuedPages={2}, activeLoads={3}, readyPages={4}, readyPatches={5}, diskHits={6}, diskMisses={7}, diskIndexSkips={8}, dbHits={9}, dbMisses={10}, dbIndexSkips={11}, loadBatches={12}, loadItems={13}, pixelReleases={14}, pixelReloads={15}, generated={16}, missing={17}, uploads={18}, saves={19}",
             pages.Count,
             visiblePageKeys.Count,
             QueuedPageLoadCount(),
@@ -1604,8 +1774,14 @@ public sealed class FastPageMapLayer : RGBMapLayer
             readyPatches.Count,
             pageDiskHits,
             pageDiskMisses,
+            pageDiskSkippedByIndex,
             pageDbHits,
             pageDbMisses,
+            pageDbSkippedByIndex,
+            pageLoadBatchesStarted,
+            pageLoadItemsProcessed,
+            pagePixelBuffersReleased,
+            pagePixelBufferReloads,
             generatedChunks,
             missingSourceChunks,
             pageUploads,
@@ -1629,6 +1805,199 @@ public sealed class FastPageMapLayer : RGBMapLayer
             return pageLoadQueue.Count;
         }
     }
+
+#if FASTMAPHITCHDIAGNOSTICS
+    private int QueuedRepairCount()
+    {
+        lock (repairLock)
+        {
+            return queuedRepairs.Count;
+        }
+    }
+
+    private int PendingTileSaveCount()
+    {
+        lock (pageSaveLock)
+        {
+            return pendingTileSaves.Count;
+        }
+    }
+
+    private Stopwatch? StartHitchStopwatch()
+    {
+        return config.EnableHitchDiagnostics ? Stopwatch.StartNew() : null;
+    }
+
+    private void MarkFrameProfiler(string code)
+    {
+        if (!config.EnableHitchDiagnostics || !api.World.FrameProfiler.Enabled)
+        {
+            return;
+        }
+
+        api.World.FrameProfiler.Mark(code);
+    }
+
+    private void LogHitchDiagnostic(Stopwatch? stopwatch, string stage, string? detail = null)
+    {
+        if (stopwatch == null || stopwatch.ElapsedMilliseconds < config.HitchDiagnosticThresholdMilliseconds)
+        {
+            return;
+        }
+
+        LogHitchDiagnostic(stage, stopwatch.ElapsedMilliseconds, detail);
+    }
+
+    private void LogFrameGapDiagnostic(float dt, string stage)
+    {
+        if (!config.EnableHitchDiagnostics)
+        {
+            return;
+        }
+
+        long elapsedMs = (long)Math.Round(dt * 1000f);
+        if (elapsedMs < config.HitchDiagnosticThresholdMilliseconds)
+        {
+            return;
+        }
+
+        LogHitchDiagnostic(stage, elapsedMs, "dt");
+    }
+
+    private void LogWallClockGapDiagnostic(ref long lastTimestamp, string stage)
+    {
+        if (!config.EnableHitchDiagnostics)
+        {
+            return;
+        }
+
+        long now = Stopwatch.GetTimestamp();
+        long previous = lastTimestamp;
+        lastTimestamp = now;
+        if (previous == 0)
+        {
+            return;
+        }
+
+        long elapsedMs = (long)((now - previous) * 1000.0 / Stopwatch.Frequency);
+        if (elapsedMs < config.HitchDiagnosticThresholdMilliseconds)
+        {
+            return;
+        }
+
+        LogHitchDiagnostic(stage, elapsedMs, "wallclock");
+    }
+
+    private void IncrementHitchDiagnosticReason(Dictionary<string, long> counters, string reason)
+    {
+        if (!config.EnableHitchDiagnostics)
+        {
+            return;
+        }
+
+        lock (hitchDiagnosticsLock)
+        {
+            counters.TryGetValue(reason, out long count);
+            counters[reason] = count + 1;
+        }
+    }
+
+    private string HitchDiagnosticReasonSummary()
+    {
+        if (!config.EnableHitchDiagnostics)
+        {
+            return string.Empty;
+        }
+
+        lock (hitchDiagnosticsLock)
+        {
+            return "queued=" + FormatReasonCounts(queuedRepairDiagnostics)
+                + ";processed=" + FormatReasonCounts(processedRepairDiagnostics)
+                + ";generated=" + FormatReasonCounts(generatedRepairDiagnostics)
+                + ";missing=" + FormatReasonCounts(missingRepairDiagnostics);
+        }
+    }
+
+    private static string FormatReasonCounts(Dictionary<string, long> counters)
+    {
+        if (counters.Count == 0)
+        {
+            return "none";
+        }
+
+        StringBuilder summary = new();
+        int emitted = 0;
+        foreach (KeyValuePair<string, long> entry in counters)
+        {
+            if (emitted > 0)
+            {
+                summary.Append('|');
+            }
+
+            summary.Append(entry.Key);
+            summary.Append(':');
+            summary.Append(entry.Value);
+            emitted++;
+        }
+
+        return summary.ToString();
+    }
+
+    private void LogHitchDiagnostic(string stage, long elapsedMs, string? detail)
+    {
+        long nowMs = capi.ElapsedMilliseconds;
+        if (nowMs - lastHitchDiagnosticLogMs < 1000)
+        {
+            return;
+        }
+
+        lastHitchDiagnosticLogMs = nowMs;
+        int gen0 = GC.CollectionCount(0);
+        int gen1 = GC.CollectionCount(1);
+        int gen2 = GC.CollectionCount(2);
+        int gen0Delta = gen0 - lastHitchGen0Collections;
+        int gen1Delta = gen1 - lastHitchGen1Collections;
+        int gen2Delta = gen2 - lastHitchGen2Collections;
+        lastHitchGen0Collections = gen0;
+        lastHitchGen1Collections = gen1;
+        lastHitchGen2Collections = gen2;
+        string repairReasons = HitchDiagnosticReasonSummary();
+        api.Logger.Warning(
+            "[FastMap] Hitch diagnostic stage={0}, elapsedMs={1}, detail={2}, pages={3}, visiblePages={4}, queuedPageLoads={5}, activeLoads={6}, readyPages={7}, readyPatches={8}, queuedRepairs={9}, queuedUploads={10}, pendingPageSaves={11}, pendingTileSaves={12}, diskHits={13}, diskMisses={14}, diskIndexSkips={15}, dbHits={16}, dbMisses={17}, dbIndexSkips={18}, loadBatches={19}, loadItems={20}, pixelReleases={21}, pixelReloads={22}, generated={23}, missing={24}, uploads={25}, saves={26}, gc0Delta={27}, gc1Delta={28}, gc2Delta={29}, managedMemoryMb={30}, repairReasons={31}",
+            stage,
+            elapsedMs,
+            detail ?? string.Empty,
+            pages.Count,
+            visiblePageKeys.Count,
+            QueuedPageLoadCount(),
+            Volatile.Read(ref activePageLoadTasks),
+            readyPages.Count,
+            readyPatches.Count,
+            QueuedRepairCount(),
+            pageUploadQueue.Count,
+            PendingPageSaveCount(),
+            PendingTileSaveCount(),
+            pageDiskHits,
+            pageDiskMisses,
+            pageDiskSkippedByIndex,
+            pageDbHits,
+            pageDbMisses,
+            pageDbSkippedByIndex,
+            pageLoadBatchesStarted,
+            pageLoadItemsProcessed,
+            pagePixelBuffersReleased,
+            pagePixelBufferReloads,
+            generatedChunks,
+            missingSourceChunks,
+            pageUploads,
+            pageSaves,
+            gen0Delta,
+            gen1Delta,
+            gen2Delta,
+            GC.GetTotalMemory(false) / (1024 * 1024),
+            repairReasons);
+    }
+#endif
 
     private void ClearQueues()
     {
@@ -1655,6 +2024,16 @@ public sealed class FastPageMapLayer : RGBMapLayer
         while (readyPatches.TryDequeue(out _))
         {
         }
+
+#if FASTMAPHITCHDIAGNOSTICS
+        lock (hitchDiagnosticsLock)
+        {
+            queuedRepairDiagnostics.Clear();
+            processedRepairDiagnostics.Clear();
+            generatedRepairDiagnostics.Clear();
+            missingRepairDiagnostics.Clear();
+        }
+#endif
 
         pageUploadQueue.Clear();
         queuedPageUploads.Clear();
@@ -1931,14 +2310,28 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void AddKnownMapDbPositions(IEnumerable<FastVec2i> chunkCoords)
     {
-        if (mapDbKnownPositions == null)
+        foreach (FastVec2i chunkCoord in chunkCoords)
+        {
+            mapDbKnownPositions?.Add(chunkCoord.ToChunkIndex());
+            MarkMapDbPageKnown(PageKey(chunkCoord));
+        }
+    }
+
+    private void MarkMapDbPageKnown(FastVec2i pageKey)
+    {
+        if (mapDbKnownPageKeys == null)
         {
             return;
         }
 
-        foreach (FastVec2i chunkCoord in chunkCoords)
+        lock (dbLock)
         {
-            mapDbKnownPositions.Add(chunkCoord.ToChunkIndex());
+            mapDbKnownPageKeys.Add(pageKey);
+        }
+
+        lock (pageLoadLock)
+        {
+            knownMissingPages.Remove(pageKey);
         }
     }
 

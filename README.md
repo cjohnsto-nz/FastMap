@@ -37,6 +37,7 @@ Optional LZ4HC writes can reduce cache size further at the cost of more CPU whil
 - `UseMinimalChunkDirtyRepairFanout`: Uses the smaller renderer-derived dirty repair set instead of the legacy 3x3 neighborhood. Disable if you need to compare against the older conservative behavior.
 - `ExperimentalChunkDirtyRepairDelayMilliseconds`: Disabled by default. Delays chunk-dirty map repairs for profiling experiments; not recommended for normal gameplay.
 - `LogStats`: Disabled by default for release. Enable it when diagnosing cache behavior in `client-main.log`.
+- `EnableHitchDiagnostics`: Disabled by default. Logs slow Fast Map tick/render/off-thread passes when diagnosing intermittent frame drops.
 
 ## Cache Cleanup
 
