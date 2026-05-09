@@ -21,6 +21,32 @@
       }
     },
     {
+      "code": "PageMemoryBudget",
+      "type": "integer",
+      "default": 1024,
+      "clientSide": true,
+      "ingui": "Page memory budget",
+      "comment": "Maximum number of FastMap page components kept in RAM after GPU textures are evicted. Higher values make pan-back faster at the cost of memory.",
+      "range": {
+        "min": 16,
+        "max": 20000,
+        "step": 16
+      }
+    },
+    {
+      "code": "ReadyPageQueueBudget",
+      "type": "integer",
+      "default": 64,
+      "clientSide": true,
+      "ingui": "Ready page queue budget",
+      "comment": "Maximum number of loaded/generated page snapshots allowed to wait for main-thread upload. Keeps fallback generation from outrunning uploads and hoarding RAM.",
+      "range": {
+        "min": 4,
+        "max": 512,
+        "step": 4
+      }
+    },
+    {
       "code": "EnableTextureAtlas",
       "type": "boolean",
       "default": true,
@@ -77,6 +103,117 @@
       "comment": "Delete stale <world>.db-wal and <world>.db-shm files once on startup before FastMap opens the vanilla map database."
     },
     {
+      "type": "separator",
+      "title": "Experimental"
+    },
+    {
+      "code": "EnableTerrainSamplerFallbackMaps",
+      "type": "boolean",
+      "default": false,
+      "clientSide": true,
+      "ingui": "Terrain sampler fallback maps",
+      "comment": "Experimental. When Algernon's Terrain Sampler is available in-process, synthesize non-true-colour map pages from sampled terrain heights for undiscovered cache misses."
+    },
+    {
+      "code": "EnableTerrainSamplerFallbackBackgroundGeneration",
+      "type": "boolean",
+      "default": false,
+      "clientSide": true,
+      "ingui": "Background fallback generation",
+      "comment": "Continue generating missing terrain-sampler fallback pages around the player while the world map is closed."
+    },
+    {
+      "code": "TerrainSamplerFallbackResolutionScale",
+      "type": "integer",
+      "default": 4,
+      "clientSide": true,
+      "ingui": "Fallback resolution scale",
+      "comment": "Synthetic terrain-sampler map resolution. 1 stores and samples every pixel; 4 stores one pixel per 4x4 page area; larger values are faster and smaller.",
+      "range": {
+        "min": 1,
+        "max": 32,
+        "step": 1
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackMaxPagesPerSession",
+      "type": "integer",
+      "default": 2048,
+      "clientSide": true,
+      "ingui": "Fallback page limit",
+      "comment": "Maximum synthetic terrain-sampler pages FastMap may build per world session. Keeps the experiment bounded while testing.",
+      "range": {
+        "min": 0,
+        "max": 100000,
+        "step": 128
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackRadiusChunks",
+      "type": "integer",
+      "default": 0,
+      "clientSide": true,
+      "ingui": "Fallback radius (chunks)",
+      "comment": "Maximum chunk radius around the player where synthetic terrain-sampler pages may be built. Set to 0 for no radius limit.",
+      "range": {
+        "min": 0,
+        "max": 8192,
+        "step": 32
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackBackgroundPagesPerPass",
+      "type": "integer",
+      "default": 16,
+      "clientSide": true,
+      "ingui": "Background fallback pages/pass",
+      "comment": "Maximum missing fallback pages to queue per background generation pass while the world map is closed.",
+      "range": {
+        "min": 1,
+        "max": 1024,
+        "step": 1
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackMaxParallelBuilds",
+      "type": "integer",
+      "default": 2,
+      "clientSide": true,
+      "ingui": "Fallback parallel builds",
+      "comment": "Maximum terrain-sampler fallback pages to build in parallel. Higher values fill distant fallback maps faster but can compete for CPU.",
+      "range": {
+        "min": 1,
+        "max": 16,
+        "step": 1
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackMaxRetries",
+      "type": "integer",
+      "default": 3,
+      "clientSide": true,
+      "ingui": "Fallback max retries",
+      "comment": "Maximum retry attempts for a synthetic terrain-sampler page if cache load or generation fails.",
+      "range": {
+        "min": 0,
+        "max": 16,
+        "step": 1
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackRetryDelayMilliseconds",
+      "type": "integer",
+      "default": 5000,
+      "clientSide": true,
+      "ingui": "Fallback retry delay",
+      "comment": "Delay before retrying a failed synthetic terrain-sampler page.",
+      "range": {
+        "min": 100,
+        "max": 120000,
+        "step": 500
+      }
+    },
+    {
       "code": "ViewportLoadScale",
       "type": "float",
       "default": 1.5,
@@ -87,6 +224,19 @@
         "min": 1.0,
         "max": 4.0,
         "step": 0.05
+      }
+    },
+    {
+      "code": "ViewportPageRetentionRings",
+      "type": "integer",
+      "default": 1,
+      "clientSide": true,
+      "ingui": "Viewport retention rings",
+      "comment": "How many extra page rings around the current loaded viewport may remain queued. 0 drops all queued page work outside the current viewport rectangle.",
+      "range": {
+        "min": 0,
+        "max": 32,
+        "step": 1
       }
     },
     {

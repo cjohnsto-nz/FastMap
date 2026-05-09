@@ -57,6 +57,22 @@ internal sealed class FastMapPageComponent : MapComponent
         }
     }
 
+    public bool HasAllValidChunks
+    {
+        get
+        {
+            for (int i = 0; i < validRows.Length; i++)
+            {
+                if (validRows[i] != uint.MaxValue)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+    }
+
     public bool IsChunkValid(int localChunkX, int localChunkZ)
     {
         if (localChunkX < 0 || localChunkX >= ChunksPerPage || localChunkZ < 0 || localChunkZ >= ChunksPerPage)
@@ -69,7 +85,12 @@ internal sealed class FastMapPageComponent : MapComponent
 
     public void ApplySnapshot(FastMapPageSnapshot snapshot)
     {
-        if (snapshot.TransferPixelsToPage)
+        if (snapshot.IsLowResolution)
+        {
+            int lowResolutionSize = FastMapTerrainFallbackDiskCache.LowResolutionSize(snapshot.ResolutionScale);
+            pixels = FastMapTerrainFallbackDiskCache.Expand(snapshot.Pixels, lowResolutionSize, snapshot.ResolutionScale);
+        }
+        else if (snapshot.TransferPixelsToPage)
         {
             pixels = snapshot.Pixels;
         }

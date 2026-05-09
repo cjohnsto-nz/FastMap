@@ -40,19 +40,35 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private readonly ICoreClientAPI capi;
     private readonly FastMapConfig config;
     private readonly FastMapPageDiskCache pageDiskCache;
+    private readonly FastMapTerrainFallbackDiskCache terrainFallbackDiskCache;
     private readonly FastMapTextureAtlas? textureAtlas;
+    private readonly FastMapTextureAtlas? fallbackTextureAtlas;
     private readonly Dictionary<FastVec2i, FastMapPageComponent> pages = new();
+    private readonly Dictionary<FastVec2i, FastMapPageComponent> fallbackPages = new();
     private readonly HashSet<FastVec2i> visibleChunks = new();
     private readonly HashSet<FastVec2i> visiblePageKeys = new();
+    private FastVec2i visibleMinPage;
+    private FastVec2i visibleMaxPage;
+    private bool hasVisiblePageRect;
     private readonly Queue<FastVec2i> pageUploadQueue = new();
     private readonly HashSet<FastVec2i> queuedPageUploads = new();
     private readonly HashSet<FastVec2i> pagesNeedingUpload = new();
 
     private readonly object pageLoadLock = new();
-    private readonly Queue<FastVec2i> pageLoadQueue = new();
+    private readonly SortedDictionary<int, Queue<FastVec2i>> pageLoadQueue = new();
+    private readonly Dictionary<FastVec2i, int> queuedPageLoadPriorities = new();
     private readonly HashSet<FastVec2i> queuedPageLoads = new();
     private readonly HashSet<FastVec2i> knownMissingPages = new();
     private readonly ConcurrentQueue<FastMapPageSnapshot> readyPages = new();
+
+    private readonly object terrainSamplerLoadLock = new();
+    private readonly Queue<FastVec2i> terrainFallbackCacheLoadQueue = new();
+    private readonly HashSet<FastVec2i> queuedTerrainFallbackCacheLoads = new();
+    private readonly SortedDictionary<int, Queue<FastVec2i>> terrainSamplerLoadQueue = new();
+    private readonly SortedDictionary<long, Queue<FastVec2i>> delayedTerrainSamplerLoadQueue = new();
+    private readonly HashSet<FastVec2i> queuedTerrainSamplerLoads = new();
+    private readonly HashSet<FastVec2i> terrainSamplerFallbackPageKeys = new();
+    private readonly Dictionary<FastVec2i, int> terrainSamplerLoadAttempts = new();
 
     private readonly object repairLock = new();
     private readonly Queue<FastVec2i> repairQueue = new();
@@ -88,6 +104,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private bool[] blockIsLakeByBlockId = Array.Empty<bool>();
     private bool[] blockIsSnowByBlockId = Array.Empty<bool>();
     private int fallbackLandColor = unchecked((int)0xFFAC8858);
+    private FastMapTerrainSamplerAdapter? terrainSamplerAdapter;
+    private bool terrainSamplerUnavailableLogged;
     private readonly ConcurrentDictionary<string, byte> loggedColorAccurateFallbacks = new();
     private readonly object surfaceTileCacheLock = new();
     private readonly Dictionary<FastVec2i, FastMapSurfaceTile> surfaceTileCache = new();
@@ -95,10 +113,13 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private float colorRandomizationWeight = 0.6f;
     private float workerAccum;
     private float prewarmAccum;
+    private float terrainSamplerBackgroundAccum;
     private float flushAccum;
     private float evictAccum;
     private float statsAccum;
     private int activePageLoadTasks;
+    private int activeTerrainSamplerLoadTasks;
+    private int activeTerrainFallbackCacheLoadTasks;
 #if FASTMAPHITCHDIAGNOSTICS
     private long lastHitchDiagnosticLogMs;
     private int lastHitchGen0Collections;
@@ -118,6 +139,22 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private long pageLoadItemsProcessed;
     private long pagePixelBuffersReleased;
     private long pagePixelBufferReloads;
+    private long terrainSamplerFallbackPages;
+    private long terrainSamplerFallbackQueued;
+    private long terrainSamplerFallbackSkipped;
+    private long terrainSamplerFallbackSkippedDisabled;
+    private long terrainSamplerFallbackSkippedLimit;
+    private long terrainSamplerFallbackSkippedRadius;
+    private long terrainSamplerFallbackSkippedDuplicate;
+    private long terrainSamplerFallbackCacheHits;
+    private long terrainSamplerFallbackCacheMisses;
+    private long terrainSamplerFallbackBuildFailures;
+    private long terrainSamplerFallbackGenerationDeferrals;
+    private long terrainSamplerFallbackRetriesQueued;
+    private long terrainSamplerFallbackRetriesExhausted;
+    private long terrainSamplerFallbackSamples;
+    private long terrainSamplerFallbackSeaSamples;
+    private long terrainSamplerFallbackNearSeaSamples;
     private long pageUploads;
     private long pageSaves;
     private long generatedChunks;
@@ -127,6 +164,22 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private long pageUploadMs;
     private long generationMs;
     private bool disposed;
+
+    private readonly struct PageEvictionCandidate
+    {
+        public PageEvictionCandidate(FastVec2i pageKey, FastMapPageComponent page, bool fallback)
+        {
+            PageKey = pageKey;
+            Page = page;
+            Fallback = fallback;
+        }
+
+        public FastVec2i PageKey { get; }
+
+        public FastMapPageComponent Page { get; }
+
+        public bool Fallback { get; }
+    }
 
     [ThreadStatic]
     private static byte[]? shadowMapReusable;
@@ -163,11 +216,14 @@ public sealed class FastPageMapLayer : RGBMapLayer
         config.Normalize();
         nativeDbPageBuildSemaphore = new SemaphoreSlim(config.MaxParallelNativeDbPageBuilds);
         pageDiskCache = new FastMapPageDiskCache(api.World.SavegameIdentifier, config.EnableCompressedCache, config.UseFilteredCache, config.UseHighCompressionCache);
+        terrainFallbackDiskCache = new FastMapTerrainFallbackDiskCache(api.World.SavegameIdentifier, config.TerrainSamplerFallbackResolutionScale, config.UseHighCompressionCache);
         textureAtlas = config.EnableTextureAtlas ? new FastMapTextureAtlas(capi) : null;
+        fallbackTextureAtlas = config.EnableTextureAtlas ? new FastMapTextureAtlas(capi) : null;
 
         OpenMapDatabase();
         api.Event.ChunkDirty += OnChunkDirty;
         api.Logger.Notification("[FastMap] Page cache: {0}", pageDiskCache.RootPath);
+        api.Logger.Notification("[FastMap] Terrain fallback cache: {0}", terrainFallbackDiskCache.RootPath);
     }
 
     public override void OnLoaded()
@@ -228,7 +284,10 @@ public sealed class FastPageMapLayer : RGBMapLayer
         if (workerAccum >= config.BackgroundWorkIntervalSeconds)
         {
             workerAccum = 0f;
+            QueueTerrainSamplerBackgroundGeneration(dt);
             StartPageLoadTasks();
+            StartTerrainFallbackCacheLoadTasks();
+            StartTerrainSamplerLoadTasks();
             ProcessChunkRepairs(config.MaxBackgroundTilesPerPass);
 #if FASTMAPHITCHDIAGNOSTICS
             startedPageLoads = true;
@@ -277,10 +336,15 @@ public sealed class FastPageMapLayer : RGBMapLayer
 #if FASTMAPHITCHDIAGNOSTICS
         MarkFrameProfiler("fastmap-ready-patches");
 #endif
+        EnsureVisiblePagesQueuedOrUploaded(stopwatch);
+#if FASTMAPHITCHDIAGNOSTICS
+        MarkFrameProfiler("fastmap-ensure-visible");
+#endif
         ProcessQueuedPageUploads(stopwatch);
 #if FASTMAPHITCHDIAGNOSTICS
         MarkFrameProfiler("fastmap-page-uploads");
 #endif
+        StartTerrainSamplerLoadTasks();
         PrewarmAroundPlayer(dt);
 #if FASTMAPHITCHDIAGNOSTICS
         MarkFrameProfiler("fastmap-prewarm");
@@ -315,6 +379,20 @@ public sealed class FastPageMapLayer : RGBMapLayer
 #endif
         foreach (FastVec2i pageKey in visiblePageKeys)
         {
+            if (fallbackPages.TryGetValue(pageKey, out FastMapPageComponent? fallbackPage))
+            {
+                if (!fallbackPage.HasGpuTexture && fallbackPage.HasPixelBuffer)
+                {
+                    UploadFallbackPage(fallbackPage);
+                }
+
+                if (fallbackPage.HasGpuTexture)
+                {
+                    fallbackPage.LastTouchedMs = capi.ElapsedMilliseconds;
+                    fallbackPage.Render(mapElem, dt);
+                }
+            }
+
             if (pages.TryGetValue(pageKey, out FastMapPageComponent? page) && page.HasGpuTexture)
             {
                 page.LastTouchedMs = capi.ElapsedMilliseconds;
@@ -371,8 +449,15 @@ public sealed class FastPageMapLayer : RGBMapLayer
             page.DisposeTexture();
         }
 
+        foreach (FastMapPageComponent page in fallbackPages.Values)
+        {
+            page.DisposeTexture();
+        }
+
         textureAtlas?.Dispose();
+        fallbackTextureAtlas?.Dispose();
         pages.Clear();
+        fallbackPages.Clear();
         ClearQueues();
         visibleChunks.Clear();
         visiblePageKeys.Clear();
@@ -466,6 +551,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private void RebuildVisiblePages()
     {
         visiblePageKeys.Clear();
+        hasVisiblePageRect = false;
         if (visibleChunks.Count == 0)
         {
             return;
@@ -492,6 +578,9 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         FastVec2i minPage = PageKey(new FastVec2i(minX - padX, minZ - padZ));
         FastVec2i maxPage = PageKey(new FastVec2i(maxX + padX, maxZ + padZ));
+        visibleMinPage = minPage;
+        visibleMaxPage = maxPage;
+        hasVisiblePageRect = true;
 
         for (int pageZ = minPage.Y; pageZ <= maxPage.Y; pageZ++)
         {
@@ -501,13 +590,33 @@ public sealed class FastPageMapLayer : RGBMapLayer
             }
         }
 
+        ReprioritizeViewportQueues();
         foreach (FastVec2i pageKey in visiblePageKeys)
         {
             QueuePageLoad(pageKey);
+            QueueVisibleTerrainFallbackCacheLoad(pageKey);
             if (pagesNeedingUpload.Contains(pageKey))
             {
                 QueuePageUpload(pageKey);
             }
+        }
+
+        StartPageLoadTasks();
+        StartTerrainFallbackCacheLoadTasks();
+    }
+
+    private void ReprioritizeViewportQueues()
+    {
+        lock (pageLoadLock)
+        {
+            ReprioritizeQueuedPageLoadsLocked();
+        }
+
+        lock (terrainSamplerLoadLock)
+        {
+            PruneTerrainFallbackCacheLoadsLocked();
+            PruneDelayedTerrainSamplerLoadsLocked();
+            ReprioritizeQueuedTerrainSamplerLoadsLocked();
         }
     }
 
@@ -535,11 +644,74 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 return;
             }
 
-            if (queuedPageLoads.Add(pageKey))
+            int priority = PageLoadPriority(pageKey);
+            if (!queuedPageLoads.Add(pageKey))
             {
-                pageLoadQueue.Enqueue(pageKey);
+                if (queuedPageLoadPriorities.TryGetValue(pageKey, out int existingPriority) && priority < existingPriority)
+                {
+                    queuedPageLoadPriorities[pageKey] = priority;
+                    EnqueuePageLoadLocked(pageKey, priority);
+                }
+
+                return;
             }
+
+            queuedPageLoadPriorities[pageKey] = priority;
+            EnqueuePageLoadLocked(pageKey, priority);
         }
+    }
+
+    private void EnqueuePageLoadLocked(FastVec2i pageKey, int priority)
+    {
+        if (!pageLoadQueue.TryGetValue(priority, out Queue<FastVec2i>? queue))
+        {
+            queue = new Queue<FastVec2i>();
+            pageLoadQueue[priority] = queue;
+        }
+
+        queue.Enqueue(pageKey);
+    }
+
+    private void ReprioritizeQueuedPageLoadsLocked()
+    {
+        if (queuedPageLoadPriorities.Count == 0)
+        {
+            pageLoadQueue.Clear();
+            return;
+        }
+
+        List<FastVec2i> pageKeys = new(queuedPageLoadPriorities.Keys);
+        pageLoadQueue.Clear();
+        foreach (FastVec2i pageKey in pageKeys)
+        {
+            if (!ShouldRetainQueuedPageWork(pageKey))
+            {
+                queuedPageLoads.Remove(pageKey);
+                queuedPageLoadPriorities.Remove(pageKey);
+                continue;
+            }
+
+            int priority = PageLoadPriority(pageKey);
+            queuedPageLoadPriorities[pageKey] = priority;
+            EnqueuePageLoadLocked(pageKey, priority);
+        }
+    }
+
+    private int PageLoadPriority(FastVec2i pageKey)
+    {
+        if (!hasVisiblePageRect)
+        {
+            return 0;
+        }
+
+        int dx = pageKey.X < visibleMinPage.X ? visibleMinPage.X - pageKey.X : pageKey.X > visibleMaxPage.X ? pageKey.X - visibleMaxPage.X : 0;
+        int dz = pageKey.Y < visibleMinPage.Y ? visibleMinPage.Y - pageKey.Y : pageKey.Y > visibleMaxPage.Y ? pageKey.Y - visibleMaxPage.Y : 0;
+        return Math.Max(dx, dz);
+    }
+
+    private bool ShouldRetainQueuedPageWork(FastVec2i pageKey)
+    {
+        return !hasVisiblePageRect || PageLoadPriority(pageKey) <= config.ViewportPageRetentionRings;
     }
 
     private void StartPageLoadTasks()
@@ -570,16 +742,107 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 finally
                 {
                     Interlocked.Decrement(ref activePageLoadTasks);
+                    StartTerrainSamplerLoadTasks();
                 }
             });
         }
+    }
+
+    private void StartTerrainSamplerLoadTasks()
+    {
+        if (disposed || !CanStartTerrainSamplerLoads())
+        {
+            return;
+        }
+
+        while (HasReadyPageCapacity()
+            && Volatile.Read(ref activeTerrainSamplerLoadTasks) < config.TerrainSamplerFallbackMaxParallelBuilds
+            && TryDequeueTerrainSamplerLoad(out FastVec2i pageKey))
+        {
+            Interlocked.Increment(ref activeTerrainSamplerLoadTasks);
+            Task.Run(() =>
+            {
+                try
+                {
+                    ProcessTerrainSamplerLoad(pageKey);
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref activeTerrainSamplerLoadTasks);
+                    StartTerrainSamplerLoadTasks();
+                }
+            });
+        }
+    }
+
+    private void StartTerrainFallbackCacheLoadTasks()
+    {
+        if (disposed || !config.EnableTerrainSamplerFallbackMaps || colorAccurate)
+        {
+            return;
+        }
+
+        while (HasReadyPageCapacity()
+            && Volatile.Read(ref activeTerrainFallbackCacheLoadTasks) < config.TerrainSamplerFallbackMaxParallelBuilds
+            && TryDequeueTerrainFallbackCacheLoad(out FastVec2i pageKey))
+        {
+            Interlocked.Increment(ref activeTerrainFallbackCacheLoadTasks);
+            Task.Run(() =>
+            {
+                try
+                {
+                    ProcessTerrainFallbackCacheLoad(pageKey);
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref activeTerrainFallbackCacheLoadTasks);
+                    StartTerrainSamplerLoadTasks();
+                }
+            });
+        }
+    }
+
+    private bool CanStartTerrainSamplerLoads()
+    {
+        return config.EnableTerrainSamplerFallbackMaps
+            && !colorAccurate
+            && HasReadyPageCapacity()
+            && !HasPendingViewportFillWork();
+    }
+
+    private bool HasReadyPageCapacity()
+    {
+        return readyPages.Count < config.ReadyPageQueueBudget;
+    }
+
+    private bool HasPendingViewportFillWork()
+    {
+        return Volatile.Read(ref activePageLoadTasks) != 0
+            || Volatile.Read(ref activeTerrainFallbackCacheLoadTasks) != 0
+            || HasQueuedPageLoads()
+            || HasQueuedTerrainFallbackCacheLoads();
+    }
+
+    private bool HasPendingTruePageWork()
+    {
+        return Volatile.Read(ref activePageLoadTasks) != 0
+            || !readyPages.IsEmpty
+            || HasQueuedPageLoads();
     }
 
     private bool HasQueuedPageLoads()
     {
         lock (pageLoadLock)
         {
-            return pageLoadQueue.Count > 0;
+            return queuedPageLoadPriorities.Count > 0;
+        }
+    }
+
+    private bool HasQueuedTerrainFallbackCacheLoads()
+    {
+        lock (terrainSamplerLoadLock)
+        {
+            return terrainFallbackCacheLoadQueue.Count > 0;
         }
     }
 
@@ -587,9 +850,46 @@ public sealed class FastPageMapLayer : RGBMapLayer
     {
         lock (pageLoadLock)
         {
-            if (pageLoadQueue.Count > 0)
+            while (pageLoadQueue.Count > 0)
             {
-                pageKey = pageLoadQueue.Dequeue();
+                KeyValuePair<int, Queue<FastVec2i>> first = FirstPageLoadBucket();
+                FastVec2i candidate = first.Value.Dequeue();
+                if (first.Value.Count == 0)
+                {
+                    pageLoadQueue.Remove(first.Key);
+                }
+
+                if (queuedPageLoadPriorities.TryGetValue(candidate, out int currentPriority) && currentPriority == first.Key)
+                {
+                    queuedPageLoadPriorities.Remove(candidate);
+                    pageKey = candidate;
+                    return true;
+                }
+            }
+        }
+
+        pageKey = default;
+        return false;
+    }
+
+    private KeyValuePair<int, Queue<FastVec2i>> FirstPageLoadBucket()
+    {
+        foreach (KeyValuePair<int, Queue<FastVec2i>> entry in pageLoadQueue)
+        {
+            return entry;
+        }
+
+        throw new InvalidOperationException("Page load queue is empty.");
+    }
+
+    private bool TryDequeueTerrainFallbackCacheLoad(out FastVec2i pageKey)
+    {
+        lock (terrainSamplerLoadLock)
+        {
+            if (terrainFallbackCacheLoadQueue.Count > 0)
+            {
+                pageKey = terrainFallbackCacheLoadQueue.Dequeue();
+                queuedTerrainFallbackCacheLoads.Remove(pageKey);
                 return true;
             }
         }
@@ -598,10 +898,84 @@ public sealed class FastPageMapLayer : RGBMapLayer
         return false;
     }
 
+    private bool TryDequeueTerrainSamplerLoad(out FastVec2i pageKey)
+    {
+        lock (terrainSamplerLoadLock)
+        {
+            MoveDueTerrainSamplerLoadsToReadyQueue(capi.ElapsedMilliseconds);
+            if (terrainSamplerLoadQueue.Count > 0)
+            {
+                KeyValuePair<int, Queue<FastVec2i>> first = FirstTerrainSamplerLoadBucket();
+                pageKey = first.Value.Dequeue();
+                if (first.Value.Count == 0)
+                {
+                    terrainSamplerLoadQueue.Remove(first.Key);
+                }
+
+                return true;
+            }
+        }
+
+        pageKey = default;
+        return false;
+    }
+
+    private KeyValuePair<int, Queue<FastVec2i>> FirstTerrainSamplerLoadBucket()
+    {
+        foreach (KeyValuePair<int, Queue<FastVec2i>> entry in terrainSamplerLoadQueue)
+        {
+            return entry;
+        }
+
+        throw new InvalidOperationException("Terrain sampler queue is empty.");
+    }
+
+    private void MoveDueTerrainSamplerLoadsToReadyQueue(long nowMs)
+    {
+        while (delayedTerrainSamplerLoadQueue.Count > 0)
+        {
+            KeyValuePair<long, Queue<FastVec2i>> first = FirstTerrainSamplerRetryBucket();
+            if (first.Key > nowMs)
+            {
+                return;
+            }
+
+            delayedTerrainSamplerLoadQueue.Remove(first.Key);
+            while (first.Value.Count > 0)
+            {
+                FastVec2i pageKey = first.Value.Dequeue();
+                if (!ShouldRetainQueuedPageWork(pageKey))
+                {
+                    terrainSamplerLoadAttempts.Remove(pageKey);
+                    queuedTerrainSamplerLoads.Remove(pageKey);
+                    continue;
+                }
+
+                EnqueueTerrainSamplerLoadLocked(pageKey, preferCacheLoad: visiblePageKeys.Contains(pageKey) && terrainFallbackDiskCache.MightContain(pageKey));
+            }
+        }
+    }
+
+    private KeyValuePair<long, Queue<FastVec2i>> FirstTerrainSamplerRetryBucket()
+    {
+        foreach (KeyValuePair<long, Queue<FastVec2i>> entry in delayedTerrainSamplerLoadQueue)
+        {
+            return entry;
+        }
+
+        throw new InvalidOperationException("Delayed terrain sampler queue is empty.");
+    }
+
     private void ProcessPageLoad(FastVec2i pageKey)
     {
-        if (disposed)
+        if (disposed || !ShouldRetainQueuedPageWork(pageKey))
         {
+            lock (pageLoadLock)
+            {
+                queuedPageLoads.Remove(pageKey);
+                queuedPageLoadPriorities.Remove(pageKey);
+            }
+
             return;
         }
 
@@ -618,6 +992,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
             Interlocked.Add(ref pageLoadMs, stopwatch.ElapsedMilliseconds);
             FastMapProfileRecorder.RecordClient("fastmap_page_disk_load", pageKey.X, 0, pageKey.Y, stopwatch.Elapsed.TotalMilliseconds, detail: "hit");
             readyPages.Enqueue(diskSnapshot);
+            QueueTerrainSamplerLoadIfIncomplete(diskSnapshot);
             return;
         }
 
@@ -649,11 +1024,13 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 kind: "inclusive");
             QueuePageSave(dbSnapshot);
             readyPages.Enqueue(dbSnapshot);
+            QueueTerrainSamplerLoadIfIncomplete(dbSnapshot);
             return;
         }
 
         string missDetail = skippedByDbIndex && !diskMightContain ? "indexskip" : "miss";
         FastMapProfileRecorder.RecordClient("fastmap_page_load", pageKey.X, 0, pageKey.Y, stopwatch.Elapsed.TotalMilliseconds, detail: missDetail);
+        QueueTerrainSamplerLoad(pageKey);
 
         if (!skippedByDbIndex)
         {
@@ -669,7 +1046,631 @@ public sealed class FastPageMapLayer : RGBMapLayer
         lock (pageLoadLock)
         {
             knownMissingPages.Add(pageKey);
+            queuedPageLoads.Remove(pageKey);
         }
+    }
+
+    private void QueueTerrainSamplerLoadIfIncomplete(FastMapPageSnapshot snapshot)
+    {
+        if (!snapshot.Synthetic && !IsCompletePage(snapshot.ValidRows))
+        {
+            QueueTerrainSamplerLoad(snapshot.PageKey);
+        }
+    }
+
+    private bool QueueVisibleTerrainFallbackCacheLoad(FastVec2i pageKey)
+    {
+        if (!terrainFallbackDiskCache.MightContain(pageKey))
+        {
+            return false;
+        }
+
+        if (fallbackPages.TryGetValue(pageKey, out FastMapPageComponent? fallbackPage) && fallbackPage.HasGpuTexture)
+        {
+            return true;
+        }
+
+        lock (terrainSamplerLoadLock)
+        {
+            if (queuedTerrainFallbackCacheLoads.Add(pageKey))
+            {
+                terrainFallbackCacheLoadQueue.Enqueue(pageKey);
+            }
+        }
+
+        return true;
+    }
+
+    private void QueueTerrainSamplerLoad(FastVec2i pageKey, bool preferCacheLoad = false)
+    {
+        if (disposed)
+        {
+            Interlocked.Increment(ref terrainSamplerFallbackSkipped);
+            return;
+        }
+
+        if (!ShouldRetainQueuedPageWork(pageKey))
+        {
+            Interlocked.Increment(ref terrainSamplerFallbackSkipped);
+            return;
+        }
+
+        if (!CanUseTerrainSamplerFallback(out TerrainSamplerSkipReason skipReason) || !PageIntersectsTerrainSamplerRadius(pageKey))
+        {
+            IncrementTerrainSamplerSkip(skipReason == TerrainSamplerSkipReason.None ? TerrainSamplerSkipReason.Radius : skipReason);
+            return;
+        }
+
+        lock (terrainSamplerLoadLock)
+        {
+            if (!TryReserveTerrainSamplerFallbackPageLocked(pageKey))
+            {
+                IncrementTerrainSamplerSkip(TerrainSamplerSkipReason.Limit);
+                return;
+            }
+
+            if (queuedTerrainSamplerLoads.Add(pageKey))
+            {
+                EnqueueTerrainSamplerLoadLocked(pageKey, preferCacheLoad);
+                Interlocked.Increment(ref terrainSamplerFallbackQueued);
+            }
+            else
+            {
+                IncrementTerrainSamplerSkip(TerrainSamplerSkipReason.Duplicate);
+            }
+        }
+    }
+
+    private bool TryReserveTerrainSamplerFallbackPageLocked(FastVec2i pageKey)
+    {
+        if (terrainSamplerFallbackPageKeys.Contains(pageKey))
+        {
+            return true;
+        }
+
+        if (terrainSamplerFallbackPageKeys.Count >= config.TerrainSamplerFallbackMaxPagesPerSession)
+        {
+            return false;
+        }
+
+        terrainSamplerFallbackPageKeys.Add(pageKey);
+        return true;
+    }
+
+    private bool IsTerrainSamplerFallbackPageReserved(FastVec2i pageKey)
+    {
+        lock (terrainSamplerLoadLock)
+        {
+            return terrainSamplerFallbackPageKeys.Contains(pageKey);
+        }
+    }
+
+    private void EnqueueTerrainSamplerLoadLocked(FastVec2i pageKey, bool preferCacheLoad = false)
+    {
+        int priority = TerrainSamplerPagePriority(pageKey, preferCacheLoad);
+        if (!terrainSamplerLoadQueue.TryGetValue(priority, out Queue<FastVec2i>? queue))
+        {
+            queue = new Queue<FastVec2i>();
+            terrainSamplerLoadQueue[priority] = queue;
+        }
+
+        queue.Enqueue(pageKey);
+    }
+
+    private void ReprioritizeQueuedTerrainSamplerLoadsLocked()
+    {
+        if (terrainSamplerLoadQueue.Count == 0)
+        {
+            return;
+        }
+
+        List<FastVec2i> pageKeys = new();
+        foreach (Queue<FastVec2i> queue in terrainSamplerLoadQueue.Values)
+        {
+            pageKeys.AddRange(queue);
+        }
+
+        terrainSamplerLoadQueue.Clear();
+        foreach (FastVec2i pageKey in pageKeys)
+        {
+            if (!ShouldRetainQueuedPageWork(pageKey))
+            {
+                queuedTerrainSamplerLoads.Remove(pageKey);
+                terrainSamplerLoadAttempts.Remove(pageKey);
+                continue;
+            }
+
+            EnqueueTerrainSamplerLoadLocked(pageKey, preferCacheLoad: false);
+        }
+    }
+
+    private void PruneTerrainFallbackCacheLoadsLocked()
+    {
+        if (terrainFallbackCacheLoadQueue.Count == 0)
+        {
+            return;
+        }
+
+        Queue<FastVec2i> currentViewportLoads = new();
+        while (terrainFallbackCacheLoadQueue.Count > 0)
+        {
+            FastVec2i pageKey = terrainFallbackCacheLoadQueue.Dequeue();
+            if (ShouldRetainQueuedPageWork(pageKey))
+            {
+                currentViewportLoads.Enqueue(pageKey);
+            }
+            else
+            {
+                queuedTerrainFallbackCacheLoads.Remove(pageKey);
+            }
+        }
+
+        while (currentViewportLoads.Count > 0)
+        {
+            terrainFallbackCacheLoadQueue.Enqueue(currentViewportLoads.Dequeue());
+        }
+    }
+
+    private void PruneDelayedTerrainSamplerLoadsLocked()
+    {
+        if (delayedTerrainSamplerLoadQueue.Count == 0)
+        {
+            return;
+        }
+
+        List<long> emptyBuckets = new();
+        List<KeyValuePair<long, Queue<FastVec2i>>> retainedBuckets = new();
+        foreach (KeyValuePair<long, Queue<FastVec2i>> entry in delayedTerrainSamplerLoadQueue)
+        {
+            Queue<FastVec2i> retainedAtTime = new();
+            while (entry.Value.Count > 0)
+            {
+                FastVec2i pageKey = entry.Value.Dequeue();
+                if (ShouldRetainQueuedPageWork(pageKey))
+                {
+                    retainedAtTime.Enqueue(pageKey);
+                }
+                else
+                {
+                    queuedTerrainSamplerLoads.Remove(pageKey);
+                    terrainSamplerLoadAttempts.Remove(pageKey);
+                }
+            }
+
+            if (retainedAtTime.Count == 0)
+            {
+                emptyBuckets.Add(entry.Key);
+            }
+            else
+            {
+                retainedBuckets.Add(new KeyValuePair<long, Queue<FastVec2i>>(entry.Key, retainedAtTime));
+            }
+        }
+
+        foreach (long dueMs in emptyBuckets)
+        {
+            delayedTerrainSamplerLoadQueue.Remove(dueMs);
+        }
+
+        foreach (KeyValuePair<long, Queue<FastVec2i>> entry in retainedBuckets)
+        {
+            delayedTerrainSamplerLoadQueue[entry.Key] = entry.Value;
+        }
+    }
+
+    private int TerrainSamplerPagePriority(FastVec2i pageKey, bool preferCacheLoad)
+    {
+        int basePriority = preferCacheLoad && visiblePageKeys.Contains(pageKey) && terrainFallbackDiskCache.MightContain(pageKey)
+            ? -100000
+            : 0;
+
+        if (!hasVisiblePageRect)
+        {
+            return basePriority;
+        }
+
+        int dx = pageKey.X < visibleMinPage.X ? visibleMinPage.X - pageKey.X : pageKey.X > visibleMaxPage.X ? pageKey.X - visibleMaxPage.X : 0;
+        int dz = pageKey.Y < visibleMinPage.Y ? visibleMinPage.Y - pageKey.Y : pageKey.Y > visibleMaxPage.Y ? pageKey.Y - visibleMaxPage.Y : 0;
+        return basePriority + Math.Max(dx, dz);
+    }
+
+    private bool ShouldQueueTerrainSamplerLoad(FastVec2i pageKey)
+    {
+        return CanUseTerrainSamplerFallback(out _) && PageIntersectsTerrainSamplerRadius(pageKey);
+    }
+
+    private bool CanUseTerrainSamplerFallback(out TerrainSamplerSkipReason skipReason)
+    {
+        if (!config.EnableTerrainSamplerFallbackMaps || colorAccurate)
+        {
+            skipReason = TerrainSamplerSkipReason.Disabled;
+            return false;
+        }
+
+        if (config.TerrainSamplerFallbackMaxPagesPerSession <= 0)
+        {
+            skipReason = TerrainSamplerSkipReason.Limit;
+            return false;
+        }
+
+        skipReason = TerrainSamplerSkipReason.None;
+        return true;
+    }
+
+    private int CountDelayedTerrainSamplerLoadsLocked()
+    {
+        int count = 0;
+        foreach (Queue<FastVec2i> queue in delayedTerrainSamplerLoadQueue.Values)
+        {
+            count += queue.Count;
+        }
+
+        return count;
+    }
+
+    private int CountTerrainSamplerLoadsLocked()
+    {
+        int count = 0;
+        foreach (Queue<FastVec2i> queue in terrainSamplerLoadQueue.Values)
+        {
+            count += queue.Count;
+        }
+
+        return count;
+    }
+
+    private void IncrementTerrainSamplerSkip(TerrainSamplerSkipReason reason)
+    {
+        Interlocked.Increment(ref terrainSamplerFallbackSkipped);
+        switch (reason)
+        {
+            case TerrainSamplerSkipReason.Disabled:
+                Interlocked.Increment(ref terrainSamplerFallbackSkippedDisabled);
+                break;
+            case TerrainSamplerSkipReason.Limit:
+                Interlocked.Increment(ref terrainSamplerFallbackSkippedLimit);
+                break;
+            case TerrainSamplerSkipReason.Radius:
+                Interlocked.Increment(ref terrainSamplerFallbackSkippedRadius);
+                break;
+            case TerrainSamplerSkipReason.Duplicate:
+                Interlocked.Increment(ref terrainSamplerFallbackSkippedDuplicate);
+                break;
+        }
+    }
+
+    private bool PageIntersectsTerrainSamplerRadius(FastVec2i pageKey)
+    {
+        int radius = config.TerrainSamplerFallbackRadiusChunks;
+        if (radius <= 0)
+        {
+            return true;
+        }
+
+        EntityPlayer? player = capi.World.Player?.Entity;
+        if (player == null)
+        {
+            return false;
+        }
+
+        BlockPos playerPos = player.Pos.AsBlockPos;
+        int playerChunkX = FloorDiv(playerPos.X, ChunkSize);
+        int playerChunkZ = FloorDiv(playerPos.Z, ChunkSize);
+        int minChunkX = pageKey.X * ChunksPerPage;
+        int minChunkZ = pageKey.Y * ChunksPerPage;
+        int maxChunkX = minChunkX + ChunksPerPage - 1;
+        int maxChunkZ = minChunkZ + ChunksPerPage - 1;
+        int dx = playerChunkX < minChunkX ? minChunkX - playerChunkX : playerChunkX > maxChunkX ? playerChunkX - maxChunkX : 0;
+        int dz = playerChunkZ < minChunkZ ? minChunkZ - playerChunkZ : playerChunkZ > maxChunkZ ? playerChunkZ - maxChunkZ : 0;
+        long radiusSquared = (long)radius * radius;
+        return (long)dx * dx + (long)dz * dz <= radiusSquared;
+    }
+
+    private void ProcessTerrainSamplerLoad(FastVec2i pageKey)
+    {
+        if (disposed || !ShouldRetainQueuedPageWork(pageKey) || !ShouldQueueTerrainSamplerLoad(pageKey))
+        {
+            FinishTerrainSamplerLoad(pageKey);
+            return;
+        }
+
+        if (!HasReadyPageCapacity())
+        {
+            RequeueTerrainSamplerLoad(pageKey);
+            return;
+        }
+
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        if (terrainFallbackDiskCache.MightContain(pageKey) && terrainFallbackDiskCache.TryLoad(pageKey, out FastMapPageSnapshot cachedSnapshot))
+        {
+            if (!disposed)
+            {
+                Interlocked.Increment(ref terrainSamplerFallbackPages);
+                Interlocked.Increment(ref terrainSamplerFallbackCacheHits);
+                FastMapProfileRecorder.RecordClient(
+                    "fastmap_page_terrain_sampler_cache_load",
+                    pageKey.X,
+                    0,
+                    pageKey.Y,
+                    stopwatch.Elapsed.TotalMilliseconds,
+                    cachedSnapshot.Pixels.Length * sizeof(int),
+                    detail: "synthetic",
+                    kind: "inclusive");
+                readyPages.Enqueue(cachedSnapshot);
+            }
+
+            FinishTerrainSamplerLoad(pageKey);
+            return;
+        }
+
+        Interlocked.Increment(ref terrainSamplerFallbackCacheMisses);
+        if (HasPendingViewportFillWork())
+        {
+            Interlocked.Increment(ref terrainSamplerFallbackGenerationDeferrals);
+            RequeueTerrainSamplerLoad(pageKey);
+            return;
+        }
+
+        if (!TryBuildPageFromTerrainSampler(pageKey, out FastMapPageSnapshot sampledSnapshot))
+        {
+            Interlocked.Increment(ref terrainSamplerFallbackBuildFailures);
+            RetryOrFinishTerrainSamplerLoad(pageKey);
+            return;
+        }
+
+        if (disposed)
+        {
+            FinishTerrainSamplerLoad(pageKey);
+            return;
+        }
+
+        Interlocked.Increment(ref terrainSamplerFallbackPages);
+        FastMapProfileRecorder.RecordClient(
+            "fastmap_page_terrain_sampler_build",
+            pageKey.X,
+            0,
+            pageKey.Y,
+            stopwatch.Elapsed.TotalMilliseconds,
+            sampledSnapshot.Pixels.Length * sizeof(int),
+            detail: "synthetic",
+            kind: "inclusive");
+        readyPages.Enqueue(sampledSnapshot);
+        FinishTerrainSamplerLoad(pageKey);
+    }
+
+    private void ProcessTerrainFallbackCacheLoad(FastVec2i pageKey)
+    {
+        if (disposed || !ShouldRetainQueuedPageWork(pageKey) || !terrainFallbackDiskCache.MightContain(pageKey))
+        {
+            return;
+        }
+
+        if (!HasReadyPageCapacity())
+        {
+            RequeueTerrainFallbackCacheLoad(pageKey);
+            return;
+        }
+
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        if (!terrainFallbackDiskCache.TryLoad(pageKey, out FastMapPageSnapshot cachedSnapshot))
+        {
+            Interlocked.Increment(ref terrainSamplerFallbackCacheMisses);
+            QueueTerrainSamplerLoad(pageKey);
+            return;
+        }
+
+        if (disposed)
+        {
+            return;
+        }
+
+        Interlocked.Increment(ref terrainSamplerFallbackPages);
+        Interlocked.Increment(ref terrainSamplerFallbackCacheHits);
+        FastMapProfileRecorder.RecordClient(
+            "fastmap_page_terrain_sampler_cache_load",
+            pageKey.X,
+            0,
+            pageKey.Y,
+            stopwatch.Elapsed.TotalMilliseconds,
+            cachedSnapshot.Pixels.Length * sizeof(int),
+            detail: "synthetic-priority-cache",
+            kind: "inclusive");
+        readyPages.Enqueue(cachedSnapshot);
+    }
+
+    private void RequeueTerrainFallbackCacheLoad(FastVec2i pageKey)
+    {
+        lock (terrainSamplerLoadLock)
+        {
+            if (ShouldRetainQueuedPageWork(pageKey) && queuedTerrainFallbackCacheLoads.Add(pageKey))
+            {
+                terrainFallbackCacheLoadQueue.Enqueue(pageKey);
+            }
+        }
+    }
+
+    private void RetryOrFinishTerrainSamplerLoad(FastVec2i pageKey)
+    {
+        lock (terrainSamplerLoadLock)
+        {
+            if (!ShouldRetainQueuedPageWork(pageKey))
+            {
+                terrainSamplerLoadAttempts.Remove(pageKey);
+                queuedTerrainSamplerLoads.Remove(pageKey);
+                return;
+            }
+
+            terrainSamplerLoadAttempts.TryGetValue(pageKey, out int attempts);
+            attempts++;
+            if (attempts > config.TerrainSamplerFallbackMaxRetries)
+            {
+                terrainSamplerLoadAttempts.Remove(pageKey);
+                queuedTerrainSamplerLoads.Remove(pageKey);
+                Interlocked.Increment(ref terrainSamplerFallbackRetriesExhausted);
+                if (config.LogStats)
+                {
+                    api.Logger.Notification("[FastMap] Terrain fallback page {0}/{1} failed after {2} attempts.", pageKey.X, pageKey.Y, attempts);
+                }
+
+                return;
+            }
+
+            terrainSamplerLoadAttempts[pageKey] = attempts;
+            long dueMs = capi.ElapsedMilliseconds + config.TerrainSamplerFallbackRetryDelayMilliseconds;
+            if (!delayedTerrainSamplerLoadQueue.TryGetValue(dueMs, out Queue<FastVec2i>? delayedAtTime))
+            {
+                delayedAtTime = new Queue<FastVec2i>();
+                delayedTerrainSamplerLoadQueue[dueMs] = delayedAtTime;
+            }
+
+            delayedAtTime.Enqueue(pageKey);
+            Interlocked.Increment(ref terrainSamplerFallbackRetriesQueued);
+            if (config.LogStats)
+            {
+                api.Logger.Notification("[FastMap] Terrain fallback page {0}/{1} failed; retry {2}/{3} queued.", pageKey.X, pageKey.Y, attempts, config.TerrainSamplerFallbackMaxRetries);
+            }
+        }
+    }
+
+    private void RequeueTerrainSamplerLoad(FastVec2i pageKey)
+    {
+        lock (terrainSamplerLoadLock)
+        {
+            if (!ShouldRetainQueuedPageWork(pageKey))
+            {
+                terrainSamplerLoadAttempts.Remove(pageKey);
+                queuedTerrainSamplerLoads.Remove(pageKey);
+                return;
+            }
+
+            EnqueueTerrainSamplerLoadLocked(pageKey, preferCacheLoad: false);
+        }
+    }
+
+    private void FinishTerrainSamplerLoad(FastVec2i pageKey)
+    {
+        lock (terrainSamplerLoadLock)
+        {
+            terrainSamplerLoadAttempts.Remove(pageKey);
+            queuedTerrainSamplerLoads.Remove(pageKey);
+        }
+    }
+
+    private enum TerrainSamplerSkipReason
+    {
+        None,
+        Disabled,
+        Limit,
+        Radius,
+        Duplicate
+    }
+
+    private bool TryBuildPageFromTerrainSampler(FastVec2i pageKey, out FastMapPageSnapshot snapshot)
+    {
+        snapshot = null!;
+        if (!ShouldQueueTerrainSamplerLoad(pageKey))
+        {
+            return false;
+        }
+
+        FastMapTerrainSamplerAdapter? sampler = terrainSamplerAdapter ??= FastMapTerrainSamplerAdapter.TryCreate();
+        if (sampler == null)
+        {
+            if (!terrainSamplerUnavailableLogged)
+            {
+                terrainSamplerUnavailableLogged = true;
+                api.Logger.Notification("[FastMap] Terrain sampler fallback maps are enabled, but Algernon's Terrain Sampler was not available in this process.");
+            }
+
+            return false;
+        }
+
+        int[] lowResolutionPixels = BuildTerrainSamplerPage(pageKey, sampler);
+        terrainFallbackDiskCache.Save(pageKey, lowResolutionPixels);
+        snapshot = FastMapTerrainFallbackDiskCache.CreateSnapshot(pageKey, lowResolutionPixels, config.TerrainSamplerFallbackResolutionScale);
+        return true;
+    }
+
+    private int[] BuildTerrainSamplerPage(FastVec2i pageKey, FastMapTerrainSamplerAdapter sampler)
+    {
+        int sampleStep = config.TerrainSamplerFallbackResolutionScale;
+        int pageSize = FastMapPageComponent.PageSize;
+        int cellsPerAxis = (pageSize + sampleStep - 1) / sampleStep;
+        int baseBlockX = pageKey.X * pageSize;
+        int baseBlockZ = pageKey.Y * pageSize;
+        int seaLevel = api.World.SeaLevel;
+        int landColor = fallbackLandColor;
+        int waterColor = colorsByCode.TryGetValue("ocean", out int ocean) ? ocean : landColor;
+        int waterEdgeColor = colorsByCode.TryGetValue("wateredge", out int edge) ? edge : waterColor;
+        int[]? previousRow = null;
+        int[] currentRow = new int[cellsPerAxis];
+        int[] lowResolutionPixels = new int[cellsPerAxis * cellsPerAxis];
+        int seaSamples = 0;
+        int nearSeaSamples = 0;
+
+        for (int cellZ = 0; cellZ < cellsPerAxis; cellZ++)
+        {
+            int localZ = cellZ * sampleStep;
+            int worldZ = baseBlockZ + localZ;
+            for (int cellX = 0; cellX < cellsPerAxis; cellX++)
+            {
+                int localX = cellX * sampleStep;
+                int worldX = baseBlockX + localX;
+                int height = sampler.GetBlockColumnHeight(worldX, worldZ);
+                currentRow[cellX] = height;
+                if (height <= seaLevel)
+                {
+                    seaSamples++;
+                }
+                else if (height <= seaLevel + 2)
+                {
+                    nearSeaSamples++;
+                }
+
+                int westHeight = cellX > 0 ? currentRow[cellX - 1] : sampler.GetBlockColumnHeight(worldX - sampleStep, worldZ);
+                int northHeight = previousRow != null ? previousRow[cellX] : sampler.GetBlockColumnHeight(worldX, worldZ - sampleStep);
+                int diagonalHeight = cellX > 0 && previousRow != null
+                    ? previousRow[cellX - 1]
+                    : sampler.GetBlockColumnHeight(worldX - sampleStep, worldZ - sampleStep);
+
+                int color = TerrainSamplerColor(height, westHeight, northHeight, diagonalHeight, seaLevel, landColor, waterColor, waterEdgeColor);
+                lowResolutionPixels[cellZ * cellsPerAxis + cellX] = color;
+            }
+
+            int[] completedRow = currentRow;
+            currentRow = previousRow ?? new int[cellsPerAxis];
+            previousRow = completedRow;
+        }
+
+        Interlocked.Add(ref terrainSamplerFallbackSamples, cellsPerAxis * cellsPerAxis);
+        Interlocked.Add(ref terrainSamplerFallbackSeaSamples, seaSamples);
+        Interlocked.Add(ref terrainSamplerFallbackNearSeaSamples, nearSeaSamples);
+        return lowResolutionPixels;
+    }
+
+    private static int TerrainSamplerColor(int height, int westHeight, int northHeight, int diagonalHeight, int seaLevel, int landColor, int waterColor, int waterEdgeColor)
+    {
+        if (height <= seaLevel)
+        {
+            // Vanilla keeps ocean pixels flat in the non-true-colour map path and only colours shorelines as wateredge.
+            bool nearLand = westHeight > seaLevel || northHeight > seaLevel || diagonalHeight > seaLevel;
+            return (nearLand ? waterEdgeColor : waterColor) | unchecked((int)0xFF000000);
+        }
+
+        int diagonalDelta = height - diagonalHeight;
+        int westDelta = height - westHeight;
+        int northDelta = height - northHeight;
+        float signSum = Math.Sign(diagonalDelta) + Math.Sign(westDelta) + Math.Sign(northDelta);
+        float maxDelta = Math.Max(Math.Max(Math.Abs(diagonalDelta), Math.Abs(westDelta)), Math.Abs(northDelta));
+        float relief = Math.Min(0.5f, maxDelta / 12f);
+        float altitude = Math.Clamp((height - seaLevel) / 180f, 0f, 0.35f);
+        float shade = signSum > 0f
+            ? 1.02f + relief * 0.55f + altitude
+            : signSum < 0f
+                ? 0.96f - relief * 0.35f + altitude * 0.5f
+                : 1f + altitude * 0.75f;
+
+        return ColorUtil.ColorMultiply3Clamped(landColor, shade) | unchecked((int)0xFF000000);
     }
 
     private bool TryBuildPageFromDb(FastVec2i pageKey, out FastMapPageSnapshot snapshot, out bool skippedByIndex)
@@ -1147,17 +2148,28 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 queuedPageLoads.Remove(snapshot.PageKey);
             }
 
-            FastMapPageComponent page = GetOrCreatePage(snapshot.PageKey);
+            FastMapPageComponent page = snapshot.Synthetic
+                ? GetOrCreateFallbackPage(snapshot.PageKey)
+                : GetOrCreatePage(snapshot.PageKey);
             page.ApplySnapshot(snapshot);
-            MarkSnapshotChunksKnown(snapshot);
+            if (!snapshot.Synthetic)
+            {
+                MarkSnapshotChunksKnown(snapshot);
+            }
 
             if (visiblePageKeys.Contains(snapshot.PageKey))
             {
-                UploadPage(page);
-                if (snapshot.TransferPixelsToPage && page.HasPixelBuffer)
+                if (snapshot.Synthetic)
                 {
-                    page.ReleasePixelBuffer();
-                    Interlocked.Increment(ref pagePixelBuffersReleased);
+                    UploadFallbackPage(page);
+                    if (!page.HasGpuTexture && config.LogStats)
+                    {
+                        api.Logger.Notification("[FastMap] Terrain fallback page {0}/{1} did not have a GPU texture after upload attempt.", snapshot.PageKey.X, snapshot.PageKey.Y);
+                    }
+                }
+                else
+                {
+                    UploadPage(page);
                 }
 
                 pagesNeedingUpload.Remove(snapshot.PageKey);
@@ -1275,6 +2287,94 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
     }
 
+    private void EnsureVisiblePagesQueuedOrUploaded(Stopwatch frameStopwatch)
+    {
+        if (disposed || visiblePageKeys.Count == 0)
+        {
+            return;
+        }
+
+        foreach (FastVec2i pageKey in visiblePageKeys)
+        {
+            if (frameStopwatch.ElapsedMilliseconds >= config.MainThreadUploadBudgetMilliseconds)
+            {
+                return;
+            }
+
+            bool hasCompleteTruePage = EnsureVisibleTruePageQueuedOrUploaded(pageKey);
+            if (!hasCompleteTruePage)
+            {
+                EnsureVisibleFallbackPageQueuedOrUploaded(pageKey);
+            }
+        }
+    }
+
+    private void EnsureVisibleFallbackPageQueuedOrUploaded(FastVec2i pageKey)
+    {
+        if (fallbackPages.TryGetValue(pageKey, out FastMapPageComponent? fallbackPage))
+        {
+            if (!fallbackPage.HasGpuTexture && fallbackPage.HasPixelBuffer)
+            {
+                UploadFallbackPage(fallbackPage);
+            }
+
+            if (fallbackPage.HasGpuTexture)
+            {
+                return;
+            }
+        }
+
+        if (!QueueVisibleTerrainFallbackCacheLoad(pageKey))
+        {
+            QueueTerrainSamplerLoad(pageKey);
+        }
+    }
+
+    private bool EnsureVisibleTruePageQueuedOrUploaded(FastVec2i pageKey)
+    {
+        if (pages.TryGetValue(pageKey, out FastMapPageComponent? page))
+        {
+            if (page.HasGpuTexture)
+            {
+                if (!page.HasAllValidChunks)
+                {
+                    QueueTerrainSamplerLoad(pageKey);
+                }
+
+                return page.HasAllValidChunks;
+            }
+
+            if (page.HasPixelBuffer)
+            {
+                UploadPage(page);
+                if (page.HasGpuTexture)
+                {
+                    pagesNeedingUpload.Remove(pageKey);
+                    if (!page.HasAllValidChunks)
+                    {
+                        QueueTerrainSamplerLoad(pageKey);
+                    }
+
+                    return page.HasAllValidChunks;
+                }
+            }
+        }
+
+        if (pageDiskCache.MightContain(pageKey) || MightMapDbContainPage(pageKey))
+        {
+            lock (pageLoadLock)
+            {
+                knownMissingPages.Remove(pageKey);
+            }
+
+            QueuePageLoad(pageKey);
+            return false;
+        }
+
+        QueueTerrainSamplerLoad(pageKey);
+        return false;
+    }
+
     private void UploadPage(FastMapPageComponent page)
     {
         Stopwatch stopwatch = Stopwatch.StartNew();
@@ -1293,12 +2393,41 @@ public sealed class FastPageMapLayer : RGBMapLayer
         FastMapProfileRecorder.RecordClient("fastmap_page_upload", page.PageKey.X, 0, page.PageKey.Y, stopwatch.Elapsed.TotalMilliseconds);
     }
 
+    private void UploadFallbackPage(FastMapPageComponent page)
+    {
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        if (fallbackTextureAtlas != null)
+        {
+            page.Upload(fallbackTextureAtlas);
+        }
+        else
+        {
+            page.Upload();
+        }
+
+        page.LastTouchedMs = capi.ElapsedMilliseconds;
+        Interlocked.Increment(ref pageUploads);
+        Interlocked.Add(ref pageUploadMs, stopwatch.ElapsedMilliseconds);
+        FastMapProfileRecorder.RecordClient("fastmap_terrain_fallback_page_upload", page.PageKey.X, 0, page.PageKey.Y, stopwatch.Elapsed.TotalMilliseconds);
+    }
+
     private FastMapPageComponent GetOrCreatePage(FastVec2i pageKey)
     {
         if (!pages.TryGetValue(pageKey, out FastMapPageComponent? page))
         {
             page = new FastMapPageComponent(capi, pageKey);
             pages[pageKey] = page;
+        }
+
+        return page;
+    }
+
+    private FastMapPageComponent GetOrCreateFallbackPage(FastVec2i pageKey)
+    {
+        if (!fallbackPages.TryGetValue(pageKey, out FastMapPageComponent? page))
+        {
+            page = new FastMapPageComponent(capi, pageKey);
+            fallbackPages[pageKey] = page;
         }
 
         return page;
@@ -1581,6 +2710,62 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
     }
 
+    private void QueueTerrainSamplerBackgroundGeneration(float dt)
+    {
+        if (disposed
+            || !config.EnableTerrainSamplerFallbackBackgroundGeneration
+            || visiblePageKeys.Count > 0
+            || !CanUseTerrainSamplerFallback(out _))
+        {
+            return;
+        }
+
+        terrainSamplerBackgroundAccum += dt;
+        if (terrainSamplerBackgroundAccum < config.PrewarmIntervalSeconds)
+        {
+            return;
+        }
+
+        terrainSamplerBackgroundAccum = 0f;
+        EntityPlayer? player = capi.World.Player?.Entity;
+        if (player == null)
+        {
+            return;
+        }
+
+        BlockPos playerPos = player.Pos.AsBlockPos;
+        int centerChunkX = FloorDiv(playerPos.X, ChunkSize);
+        int centerChunkZ = FloorDiv(playerPos.Z, ChunkSize);
+        FastVec2i centerPage = PageKey(new FastVec2i(centerChunkX, centerChunkZ));
+        int radiusPages = Math.Max(0, (int)Math.Ceiling(config.TerrainSamplerFallbackRadiusChunks / (double)ChunksPerPage));
+        int queued = 0;
+
+        for (int ring = 0; ring <= radiusPages && queued < config.TerrainSamplerFallbackBackgroundPagesPerPass; ring++)
+        {
+            for (int dz = -ring; dz <= ring && queued < config.TerrainSamplerFallbackBackgroundPagesPerPass; dz++)
+            {
+                for (int dx = -ring; dx <= ring && queued < config.TerrainSamplerFallbackBackgroundPagesPerPass; dx++)
+                {
+                    if (Math.Max(Math.Abs(dx), Math.Abs(dz)) != ring)
+                    {
+                        continue;
+                    }
+
+                    FastVec2i pageKey = new(centerPage.X + dx, centerPage.Y + dz);
+                    if (fallbackPages.ContainsKey(pageKey)
+                        || terrainFallbackDiskCache.MightContain(pageKey)
+                        || IsTerrainSamplerFallbackPageReserved(pageKey))
+                    {
+                        continue;
+                    }
+
+                    QueueTerrainSamplerLoad(pageKey);
+                    queued++;
+                }
+            }
+        }
+    }
+
     private void MarkSnapshotChunksKnown(FastMapPageSnapshot snapshot)
     {
         MarkMapDbPageKnown(snapshot.PageKey);
@@ -1722,31 +2907,123 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
 
         evictAccum += dt;
-        if (evictAccum < 1f || pages.Count <= config.PageTextureBudget)
+        int textureCount = GpuTexturePageCount();
+        int memoryCount = pages.Count + fallbackPages.Count;
+        if (evictAccum < 1f || (textureCount <= config.PageTextureBudget && memoryCount <= config.PageMemoryBudget))
         {
             return;
         }
 
         evictAccum = 0f;
-        List<KeyValuePair<FastVec2i, FastMapPageComponent>> candidates = new();
-        foreach (KeyValuePair<FastVec2i, FastMapPageComponent> entry in pages)
+        EvictGpuTextures(textureCount);
+        EvictMemoryPages();
+    }
+
+    private int GpuTexturePageCount()
+    {
+        int count = 0;
+        foreach (FastMapPageComponent page in pages.Values)
         {
-            if (!visiblePageKeys.Contains(entry.Key))
+            if (page.HasGpuTexture)
             {
-                candidates.Add(entry);
+                count++;
             }
         }
 
-        candidates.Sort((a, b) => a.Value.LastTouchedMs.CompareTo(b.Value.LastTouchedMs));
-        foreach (KeyValuePair<FastVec2i, FastMapPageComponent> candidate in candidates)
+        foreach (FastMapPageComponent page in fallbackPages.Values)
         {
-            if (pages.Count <= config.PageTextureBudget)
+            if (page.HasGpuTexture)
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    private void EvictGpuTextures(int textureCount)
+    {
+        if (textureCount <= config.PageTextureBudget)
+        {
+            return;
+        }
+
+        List<PageEvictionCandidate> candidates = new();
+        AddEvictionCandidates(pages, candidates, fallback: false, requireGpuTexture: true);
+        AddEvictionCandidates(fallbackPages, candidates, fallback: true, requireGpuTexture: true);
+        candidates.Sort((a, b) => a.Page.LastTouchedMs.CompareTo(b.Page.LastTouchedMs));
+
+        foreach (PageEvictionCandidate candidate in candidates)
+        {
+            if (textureCount <= config.PageTextureBudget)
             {
                 break;
             }
 
-            candidate.Value.DisposeTexture();
-            pages.Remove(candidate.Key);
+            candidate.Page.DisposeTexture();
+            textureCount--;
+        }
+    }
+
+    private void EvictMemoryPages()
+    {
+        int memoryCount = pages.Count + fallbackPages.Count;
+        if (memoryCount <= config.PageMemoryBudget)
+        {
+            return;
+        }
+
+        List<PageEvictionCandidate> candidates = new();
+        AddEvictionCandidates(pages, candidates, fallback: false, requireGpuTexture: false);
+        AddEvictionCandidates(fallbackPages, candidates, fallback: true, requireGpuTexture: false);
+        candidates.Sort((a, b) =>
+        {
+            int textureCompare = a.Page.HasGpuTexture.CompareTo(b.Page.HasGpuTexture);
+            return textureCompare != 0 ? textureCompare : a.Page.LastTouchedMs.CompareTo(b.Page.LastTouchedMs);
+        });
+
+        foreach (PageEvictionCandidate candidate in candidates)
+        {
+            if (memoryCount <= config.PageMemoryBudget)
+            {
+                break;
+            }
+
+            candidate.Page.DisposeTexture();
+            candidate.Page.ReleasePixelBuffer();
+            Interlocked.Increment(ref pagePixelBuffersReleased);
+            if (candidate.Fallback)
+            {
+                fallbackPages.Remove(candidate.PageKey);
+            }
+            else
+            {
+                pages.Remove(candidate.PageKey);
+            }
+
+            memoryCount--;
+        }
+    }
+
+    private void AddEvictionCandidates(
+        Dictionary<FastVec2i, FastMapPageComponent> pageDictionary,
+        List<PageEvictionCandidate> candidates,
+        bool fallback,
+        bool requireGpuTexture)
+    {
+        foreach (KeyValuePair<FastVec2i, FastMapPageComponent> entry in pageDictionary)
+        {
+            if (visiblePageKeys.Contains(entry.Key))
+            {
+                continue;
+            }
+
+            if (requireGpuTexture && !entry.Value.HasGpuTexture)
+            {
+                continue;
+            }
+
+            candidates.Add(new PageEvictionCandidate(entry.Key, entry.Value, fallback));
         }
     }
 
@@ -1764,13 +3041,18 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
 
         statsAccum = 0f;
+        GetReadyPageQueueDiagnostics(out int readyFullResPages, out int readyLowResPages, out long readyApproxMb);
         api.Logger.Notification(
-            "[FastMap] pages loaded={0}, visible={1}, queuedPages={2}, activeLoads={3}, readyPages={4}, readyPatches={5}, diskHits={6}, diskMisses={7}, diskIndexSkips={8}, dbHits={9}, dbMisses={10}, dbIndexSkips={11}, loadBatches={12}, loadItems={13}, pixelReleases={14}, pixelReloads={15}, generated={16}, missing={17}, uploads={18}, saves={19}",
+            "[FastMap] pages loaded={0}, visible={1}, queuedPages={2}, activeLoads={3}, readyPages={4}, readyLowRes={5}, readyFullRes={6}, readyApproxMb={7}, managedMb={8}, readyPatches={9}, diskHits={10}, diskMisses={11}, diskIndexSkips={12}, dbHits={13}, dbMisses={14}, dbIndexSkips={15}, loadBatches={16}, loadItems={17}, pixelReleases={18}, pixelReloads={19}, samplerPages={20}, samplerQueued={21}, samplerSkipped={22}, samplerQueue={23}, samplerActive={24}, samplerCacheQueue={25}, samplerCacheActive={26}, samplerCacheHits={27}, samplerCacheMisses={28}, samplerBuildFails={29}, samplerGenDefers={30}, samplerRetries={31}, samplerRetryExhausted={32}, samplerSamples={33}, samplerSea={34}, samplerNearSea={35}, generated={36}, missing={37}, uploads={38}, saves={39}",
             pages.Count,
             visiblePageKeys.Count,
             QueuedPageLoadCount(),
             Volatile.Read(ref activePageLoadTasks),
             readyPages.Count,
+            readyLowResPages,
+            readyFullResPages,
+            readyApproxMb,
+            GC.GetTotalMemory(false) / (1024 * 1024),
             readyPatches.Count,
             pageDiskHits,
             pageDiskMisses,
@@ -1782,27 +3064,145 @@ public sealed class FastPageMapLayer : RGBMapLayer
             pageLoadItemsProcessed,
             pagePixelBuffersReleased,
             pagePixelBufferReloads,
+            terrainSamplerFallbackPages,
+            terrainSamplerFallbackQueued,
+            terrainSamplerFallbackSkipped,
+            QueuedTerrainSamplerLoadCount(),
+            Volatile.Read(ref activeTerrainSamplerLoadTasks),
+            QueuedTerrainFallbackCacheLoadCount(),
+            Volatile.Read(ref activeTerrainFallbackCacheLoadTasks),
+            terrainSamplerFallbackCacheHits,
+            terrainSamplerFallbackCacheMisses,
+            terrainSamplerFallbackBuildFailures,
+            terrainSamplerFallbackGenerationDeferrals,
+            terrainSamplerFallbackRetriesQueued,
+            terrainSamplerFallbackRetriesExhausted,
+            terrainSamplerFallbackSamples,
+            terrainSamplerFallbackSeaSamples,
+            terrainSamplerFallbackNearSeaSamples,
             generatedChunks,
             missingSourceChunks,
             pageUploads,
             pageSaves
         );
         api.Logger.Notification(
-            "[FastMap] page timings loadMs={0}, uploadMs={1}, generationMs={2}, tileDbHits={3}, atlases={4}, path={5}",
+            "[FastMap] page timings loadMs={0}, uploadMs={1}, generationMs={2}, tileDbHits={3}, atlases={4}, samplerSkipDisabled={5}, samplerSkipLimit={6}, samplerSkipRadius={7}, samplerSkipDuplicate={8}, path={9}",
             pageLoadMs,
             pageUploadMs,
             generationMs,
             tileDbHits,
-            textureAtlas?.AtlasCount ?? 0,
+            (textureAtlas?.AtlasCount ?? 0) + (fallbackTextureAtlas?.AtlasCount ?? 0),
+            terrainSamplerFallbackSkippedDisabled,
+            terrainSamplerFallbackSkippedLimit,
+            terrainSamplerFallbackSkippedRadius,
+            terrainSamplerFallbackSkippedDuplicate,
             pageDiskCache.RootPath
         );
+        api.Logger.Notification("[FastMap] sampler scheduler {0}", TerrainSamplerSchedulerDetail());
+    }
+
+    private void GetReadyPageQueueDiagnostics(out int fullResolutionPages, out int lowResolutionPages, out long approxMegabytes)
+    {
+        fullResolutionPages = 0;
+        lowResolutionPages = 0;
+        long bytes = 0;
+
+        foreach (FastMapPageSnapshot snapshot in readyPages)
+        {
+            if (snapshot.IsLowResolution)
+            {
+                lowResolutionPages++;
+            }
+            else
+            {
+                fullResolutionPages++;
+            }
+
+            bytes += (long)snapshot.Pixels.Length * sizeof(int);
+        }
+
+        approxMegabytes = bytes / (1024 * 1024);
+    }
+
+    private string TerrainSamplerSchedulerDetail()
+    {
+        bool canUse = CanUseTerrainSamplerFallback(out TerrainSamplerSkipReason skipReason);
+        bool pendingViewportFill = HasPendingViewportFillWork();
+        int readyQueue;
+        int delayedQueue;
+        int cacheQueue;
+        long nextRetryDelayMs;
+        lock (terrainSamplerLoadLock)
+        {
+            readyQueue = CountTerrainSamplerLoadsLocked();
+            delayedQueue = CountDelayedTerrainSamplerLoadsLocked();
+            cacheQueue = terrainFallbackCacheLoadQueue.Count;
+            nextRetryDelayMs = NextTerrainSamplerRetryDelayMsLocked();
+        }
+
+        int trueQueue = QueuedPageLoadCount();
+        long fallbackPages = Interlocked.Read(ref terrainSamplerFallbackPages);
+        GetReadyPageQueueDiagnostics(out int readyFullResPages, out int readyLowResPages, out long readyApproxMb);
+        int uniquePages;
+        lock (terrainSamplerLoadLock)
+        {
+            uniquePages = terrainSamplerFallbackPageKeys.Count;
+        }
+
+        return "canUse=" + canUse
+            + ";reason=" + skipReason
+            + ";canStart=" + CanStartTerrainSamplerLoads()
+            + ";pendingViewportFill=" + pendingViewportFill
+            + ";trueQueue=" + trueQueue
+            + ";trueActive=" + Volatile.Read(ref activePageLoadTasks)
+            + ";readyPages=" + readyPages.Count + "/" + config.ReadyPageQueueBudget
+            + ";readyLowRes=" + readyLowResPages
+            + ";readyFullRes=" + readyFullResPages
+            + ";readyApproxMb=" + readyApproxMb
+            + ";managedMb=" + (GC.GetTotalMemory(false) / (1024 * 1024))
+            + ";cacheQueue=" + cacheQueue
+            + ";cacheActive=" + Volatile.Read(ref activeTerrainFallbackCacheLoadTasks)
+            + ";samplerQueue=" + readyQueue
+            + ";samplerDelayed=" + delayedQueue
+            + ";samplerActive=" + Volatile.Read(ref activeTerrainSamplerLoadTasks)
+            + ";nextRetryMs=" + nextRetryDelayMs
+            + ";reserved=" + uniquePages + "/" + config.TerrainSamplerFallbackMaxPagesPerSession
+            + ";generated=" + fallbackPages
+            + ";colorAccurate=" + colorAccurate
+            + ";visible=" + visiblePageKeys.Count;
+    }
+
+    private long NextTerrainSamplerRetryDelayMsLocked()
+    {
+        foreach (long dueMs in delayedTerrainSamplerLoadQueue.Keys)
+        {
+            return Math.Max(0, dueMs - capi.ElapsedMilliseconds);
+        }
+
+        return -1;
     }
 
     private int QueuedPageLoadCount()
     {
         lock (pageLoadLock)
         {
-            return pageLoadQueue.Count;
+            return queuedPageLoadPriorities.Count;
+        }
+    }
+
+    private int QueuedTerrainSamplerLoadCount()
+    {
+        lock (terrainSamplerLoadLock)
+        {
+            return CountTerrainSamplerLoadsLocked();
+        }
+    }
+
+    private int QueuedTerrainFallbackCacheLoadCount()
+    {
+        lock (terrainSamplerLoadLock)
+        {
+            return terrainFallbackCacheLoadQueue.Count;
         }
     }
 
@@ -2004,8 +3404,20 @@ public sealed class FastPageMapLayer : RGBMapLayer
         lock (pageLoadLock)
         {
             pageLoadQueue.Clear();
+            queuedPageLoadPriorities.Clear();
             queuedPageLoads.Clear();
             knownMissingPages.Clear();
+        }
+
+        lock (terrainSamplerLoadLock)
+        {
+            terrainFallbackCacheLoadQueue.Clear();
+            queuedTerrainFallbackCacheLoads.Clear();
+            terrainSamplerLoadQueue.Clear();
+            delayedTerrainSamplerLoadQueue.Clear();
+            queuedTerrainSamplerLoads.Clear();
+            terrainSamplerFallbackPageKeys.Clear();
+            terrainSamplerLoadAttempts.Clear();
         }
 
         while (readyPages.TryDequeue(out _))
@@ -2889,6 +4301,24 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
 
         return false;
+    }
+
+    private static bool IsCompletePage(uint[] validRows)
+    {
+        if (validRows.Length != ChunksPerPage)
+        {
+            return false;
+        }
+
+        for (int i = 0; i < validRows.Length; i++)
+        {
+            if (validRows[i] != uint.MaxValue)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static string RepairDetail(string reason, bool force)
