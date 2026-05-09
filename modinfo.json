@@ -3,10 +3,11 @@
   "modid": "fastmap",
   "name": "Fast Map",
   "authors": ["chrisunfocused"],
-  "version": "0.5.0",
+  "version": "0.5.0-dev.1",
   "description": "Map. but Fast",
   "dependencies": {
-    "game": "1.22.0"
+    "game": "1.22.0",
+    "algernonsterrainsampler": "1.2.1"
   },
   "side": "Client"
 }
