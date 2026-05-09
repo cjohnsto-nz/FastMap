@@ -41,6 +41,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private readonly FastMapConfig config;
     private readonly FastMapPageDiskCache pageDiskCache;
     private readonly FastMapTerrainFallbackDiskCache terrainFallbackDiskCache;
+    private readonly FastMapTerrainFallbackDiskCache trueColorTerrainFallbackDiskCache;
+    private readonly FastMapFallbackPalette fallbackPalette;
     private readonly FastMapTextureAtlas? textureAtlas;
     private readonly FastMapTextureAtlas? fallbackTextureAtlas;
     private readonly Dictionary<FastVec2i, FastMapPageComponent> pages = new();
@@ -155,6 +157,13 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private long terrainSamplerFallbackSamples;
     private long terrainSamplerFallbackSeaSamples;
     private long terrainSamplerFallbackNearSeaSamples;
+    private long terrainSamplerFallbackTrueColorProbes;
+    private long terrainSamplerFallbackTrueColorHits;
+    private long terrainSamplerFallbackTrueColorMisses;
+    private long terrainSamplerFallbackTrueColorMissingChunk;
+    private long terrainSamplerFallbackTrueColorInvalidHeight;
+    private long terrainSamplerFallbackTrueColorAir;
+    private long terrainSamplerFallbackTrueColorErrors;
     private long pageUploads;
     private long pageSaves;
     private long generatedChunks;
@@ -217,6 +226,12 @@ public sealed class FastPageMapLayer : RGBMapLayer
         nativeDbPageBuildSemaphore = new SemaphoreSlim(config.MaxParallelNativeDbPageBuilds);
         pageDiskCache = new FastMapPageDiskCache(api.World.SavegameIdentifier, config.EnableCompressedCache, config.UseFilteredCache, config.UseHighCompressionCache);
         terrainFallbackDiskCache = new FastMapTerrainFallbackDiskCache(api.World.SavegameIdentifier, config.TerrainSamplerFallbackResolutionScale, config.UseHighCompressionCache);
+        trueColorTerrainFallbackDiskCache = new FastMapTerrainFallbackDiskCache(
+            api.World.SavegameIdentifier,
+            config.TerrainSamplerFallbackResolutionScale,
+            config.UseHighCompressionCache,
+            "truecolour-palette-v3-h" + config.TerrainSamplerFallbackSnowStartHeight);
+        fallbackPalette = FastMapFallbackPalette.Load(api);
         textureAtlas = config.EnableTextureAtlas ? new FastMapTextureAtlas(capi, FastMapPageComponent.PageSize) : null;
         fallbackTextureAtlas = config.EnableTextureAtlas
             ? new FastMapTextureAtlas(capi, FastMapTerrainFallbackDiskCache.LowResolutionSize(config.TerrainSamplerFallbackResolutionScale))
@@ -226,7 +241,13 @@ public sealed class FastPageMapLayer : RGBMapLayer
         api.Event.ChunkDirty += OnChunkDirty;
         api.Logger.Notification("[FastMap] Page cache: {0}", pageDiskCache.RootPath);
         api.Logger.Notification("[FastMap] Terrain fallback cache: {0}", terrainFallbackDiskCache.RootPath);
+        api.Logger.Notification("[FastMap] Terrain true-colour fallback cache: {0}", trueColorTerrainFallbackDiskCache.RootPath);
     }
+
+    private FastMapTerrainFallbackDiskCache CurrentTerrainFallbackDiskCache =>
+        colorAccurate && config.EnableTerrainSamplerFallbackTrueColor
+            ? trueColorTerrainFallbackDiskCache
+            : terrainFallbackDiskCache;
 
     public override void OnLoaded()
     {
@@ -779,7 +800,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void StartTerrainFallbackCacheLoadTasks()
     {
-        if (disposed || !config.EnableTerrainSamplerFallbackMaps || colorAccurate)
+        if (disposed || !config.EnableTerrainSamplerFallbackMaps)
         {
             return;
         }
@@ -807,7 +828,6 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private bool CanStartTerrainSamplerLoads()
     {
         return config.EnableTerrainSamplerFallbackMaps
-            && !colorAccurate
             && HasReadyPageCapacity()
             && !HasPendingViewportFillWork();
     }
@@ -953,7 +973,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
                     continue;
                 }
 
-                EnqueueTerrainSamplerLoadLocked(pageKey, preferCacheLoad: visiblePageKeys.Contains(pageKey) && terrainFallbackDiskCache.MightContain(pageKey));
+                EnqueueTerrainSamplerLoadLocked(pageKey, preferCacheLoad: visiblePageKeys.Contains(pageKey) && CurrentTerrainFallbackDiskCache.MightContain(pageKey));
             }
         }
     }
@@ -1062,7 +1082,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private bool QueueVisibleTerrainFallbackCacheLoad(FastVec2i pageKey)
     {
-        if (!terrainFallbackDiskCache.MightContain(pageKey))
+        if (!CurrentTerrainFallbackDiskCache.MightContain(pageKey))
         {
             return false;
         }
@@ -1262,7 +1282,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private int TerrainSamplerPagePriority(FastVec2i pageKey, bool preferCacheLoad)
     {
-        int basePriority = preferCacheLoad && visiblePageKeys.Contains(pageKey) && terrainFallbackDiskCache.MightContain(pageKey)
+        int basePriority = preferCacheLoad && visiblePageKeys.Contains(pageKey) && CurrentTerrainFallbackDiskCache.MightContain(pageKey)
             ? -100000
             : 0;
 
@@ -1283,7 +1303,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private bool CanUseTerrainSamplerFallback(out TerrainSamplerSkipReason skipReason)
     {
-        if (!config.EnableTerrainSamplerFallbackMaps || colorAccurate)
+        if (!config.EnableTerrainSamplerFallbackMaps)
         {
             skipReason = TerrainSamplerSkipReason.Disabled;
             return false;
@@ -1383,7 +1403,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
 
         Stopwatch stopwatch = Stopwatch.StartNew();
-        if (terrainFallbackDiskCache.MightContain(pageKey) && terrainFallbackDiskCache.TryLoad(pageKey, out FastMapPageSnapshot cachedSnapshot))
+        FastMapTerrainFallbackDiskCache fallbackDiskCache = CurrentTerrainFallbackDiskCache;
+        if (fallbackDiskCache.MightContain(pageKey) && fallbackDiskCache.TryLoad(pageKey, out FastMapPageSnapshot cachedSnapshot))
         {
             if (!disposed)
             {
@@ -1442,7 +1463,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void ProcessTerrainFallbackCacheLoad(FastVec2i pageKey)
     {
-        if (disposed || !ShouldRetainQueuedPageWork(pageKey) || !terrainFallbackDiskCache.MightContain(pageKey))
+        FastMapTerrainFallbackDiskCache fallbackDiskCache = CurrentTerrainFallbackDiskCache;
+        if (disposed || !ShouldRetainQueuedPageWork(pageKey) || !fallbackDiskCache.MightContain(pageKey))
         {
             return;
         }
@@ -1454,7 +1476,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
 
         Stopwatch stopwatch = Stopwatch.StartNew();
-        if (!terrainFallbackDiskCache.TryLoad(pageKey, out FastMapPageSnapshot cachedSnapshot))
+        if (!fallbackDiskCache.TryLoad(pageKey, out FastMapPageSnapshot cachedSnapshot))
         {
             Interlocked.Increment(ref terrainSamplerFallbackCacheMisses);
             QueueTerrainSamplerLoad(pageKey);
@@ -1588,7 +1610,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
 
         int[] lowResolutionPixels = BuildTerrainSamplerPage(pageKey, sampler);
-        terrainFallbackDiskCache.Save(pageKey, lowResolutionPixels);
+        CurrentTerrainFallbackDiskCache.Save(pageKey, lowResolutionPixels);
         snapshot = FastMapTerrainFallbackDiskCache.CreateSnapshot(pageKey, lowResolutionPixels, config.TerrainSamplerFallbackResolutionScale);
         return true;
     }
@@ -1607,8 +1629,17 @@ public sealed class FastPageMapLayer : RGBMapLayer
         int[]? previousRow = null;
         int[] currentRow = new int[cellsPerAxis];
         int[] lowResolutionPixels = new int[cellsPerAxis * cellsPerAxis];
+        bool usePaletteFallback = colorAccurate && config.EnableTerrainSamplerFallbackTrueColor;
+        bool useTrueColorProbes = false;
+        int trueColorProbeStride = Math.Max(1, config.TerrainSamplerFallbackTrueColorProbeStride);
+        int trueColorProbeCellsPerAxis = useTrueColorProbes ? (cellsPerAxis + trueColorProbeStride - 1) / trueColorProbeStride : 0;
+        bool[] trueColorProbeAttempted = useTrueColorProbes ? new bool[trueColorProbeCellsPerAxis * trueColorProbeCellsPerAxis] : Array.Empty<bool>();
+        int[] trueColorProbeColors = useTrueColorProbes ? new int[trueColorProbeAttempted.Length] : Array.Empty<int>();
         int seaSamples = 0;
         int nearSeaSamples = 0;
+        long trueColorProbes = 0;
+        long trueColorHits = 0;
+        long trueColorMisses = 0;
 
         for (int cellZ = 0; cellZ < cellsPerAxis; cellZ++)
         {
@@ -1636,6 +1667,35 @@ public sealed class FastPageMapLayer : RGBMapLayer
                     : sampler.GetBlockColumnHeight(worldX - sampleStep, worldZ - sampleStep);
 
                 int color = TerrainSamplerColor(height, westHeight, northHeight, diagonalHeight, seaLevel, landColor, waterColor, waterEdgeColor);
+                if (usePaletteFallback
+                    && fallbackPalette.TryGetColor(height, seaLevel, config.TerrainSamplerFallbackSnowStartHeight, worldX, worldZ, out int paletteColor, out bool flattenPaletteColor))
+                {
+                    color = flattenPaletteColor
+                        ? paletteColor
+                        : TerrainSamplerShadeColor(paletteColor, height, westHeight, northHeight, diagonalHeight, seaLevel);
+                }
+
+                if (useTrueColorProbes
+                    && height > seaLevel
+                    && TryGetCachedTerrainSamplerTrueColor(
+                        cellX,
+                        cellZ,
+                        trueColorProbeStride,
+                        trueColorProbeCellsPerAxis,
+                        baseBlockX,
+                        baseBlockZ,
+                        sampleStep,
+                        sampler,
+                        trueColorProbeAttempted,
+                        trueColorProbeColors,
+                        ref trueColorProbes,
+                        ref trueColorHits,
+                        ref trueColorMisses,
+                        out int trueColor))
+                {
+                    color = TerrainSamplerShadeColor(trueColor, height, westHeight, northHeight, diagonalHeight, seaLevel);
+                }
+
                 lowResolutionPixels[cellZ * cellsPerAxis + cellX] = color;
             }
 
@@ -1647,7 +1707,133 @@ public sealed class FastPageMapLayer : RGBMapLayer
         Interlocked.Add(ref terrainSamplerFallbackSamples, cellsPerAxis * cellsPerAxis);
         Interlocked.Add(ref terrainSamplerFallbackSeaSamples, seaSamples);
         Interlocked.Add(ref terrainSamplerFallbackNearSeaSamples, nearSeaSamples);
+        Interlocked.Add(ref terrainSamplerFallbackTrueColorProbes, trueColorProbes);
+        Interlocked.Add(ref terrainSamplerFallbackTrueColorHits, trueColorHits);
+        Interlocked.Add(ref terrainSamplerFallbackTrueColorMisses, trueColorMisses);
         return lowResolutionPixels;
+    }
+
+    private bool TryGetCachedTerrainSamplerTrueColor(
+        int cellX,
+        int cellZ,
+        int probeStride,
+        int probeCellsPerAxis,
+        int baseBlockX,
+        int baseBlockZ,
+        int sampleStep,
+        FastMapTerrainSamplerAdapter sampler,
+        bool[] attempted,
+        int[] colors,
+        ref long probes,
+        ref long hits,
+        ref long misses,
+        out int color)
+    {
+        int probeX = cellX / probeStride;
+        int probeZ = cellZ / probeStride;
+        int probeIndex = probeZ * probeCellsPerAxis + probeX;
+        if (!attempted[probeIndex])
+        {
+            attempted[probeIndex] = true;
+            probes++;
+
+            int sampleCellX = probeX * probeStride;
+            int sampleCellZ = probeZ * probeStride;
+            int worldX = baseBlockX + sampleCellX * sampleStep;
+            int worldZ = baseBlockZ + sampleCellZ * sampleStep;
+            int height = sampler.GetBlockColumnHeight(worldX, worldZ);
+            TerrainSamplerTrueColorProbeResult result = TryGetTerrainSamplerSurfaceTrueColor(worldX, height, worldZ, out int sampledColor);
+            if (result == TerrainSamplerTrueColorProbeResult.Hit)
+            {
+                colors[probeIndex] = sampledColor | unchecked((int)0xFF000000);
+                hits++;
+            }
+            else
+            {
+                misses++;
+                IncrementTerrainSamplerTrueColorMiss(result);
+            }
+        }
+
+        color = colors[probeIndex];
+        return color != 0;
+    }
+
+    private TerrainSamplerTrueColorProbeResult TryGetTerrainSamplerSurfaceTrueColor(int worldX, int height, int worldZ, out int color)
+    {
+        color = 0;
+        int chunkX = FloorDiv(worldX, ChunkSize);
+        int chunkZ = FloorDiv(worldZ, ChunkSize);
+        int localX = PositiveMod(worldX, ChunkSize);
+        int localZ = PositiveMod(worldZ, ChunkSize);
+        bool sawAir = false;
+
+        for (int dy = 0; dy >= -3; dy--)
+        {
+            int sampleY = height + dy;
+            int chunkY = FloorDiv(sampleY, ChunkSize);
+            if ((uint)chunkY >= (uint)chunksTmp.Length)
+            {
+                continue;
+            }
+
+            IWorldChunk chunk = capi.World.BlockAccessor.GetChunk(chunkX, chunkY, chunkZ);
+            if (chunk is not IClientChunk clientChunk || !clientChunk.LoadedFromServer)
+            {
+                return TerrainSamplerTrueColorProbeResult.MissingChunk;
+            }
+
+            chunk.Unpack_ReadOnly();
+            int blockId = ReadBlockId(chunk, localX, PositiveMod(sampleY, ChunkSize), localZ);
+            if (blockId <= 0 || (uint)blockId >= (uint)api.World.Blocks.Count)
+            {
+                sawAir = true;
+                continue;
+            }
+
+            try
+            {
+                Block block = api.World.Blocks[blockId];
+                BlockPos blockPos = new(0);
+                blockPos.Set(worldX, sampleY, worldZ);
+                color = GetColorAccurateMapColor(block, blockId, blockPos, new FastVec2i(chunkX, chunkZ));
+                return TerrainSamplerTrueColorProbeResult.Hit;
+            }
+            catch
+            {
+                return TerrainSamplerTrueColorProbeResult.ColorError;
+            }
+        }
+
+        return sawAir ? TerrainSamplerTrueColorProbeResult.Air : TerrainSamplerTrueColorProbeResult.InvalidHeight;
+    }
+
+    private void IncrementTerrainSamplerTrueColorMiss(TerrainSamplerTrueColorProbeResult result)
+    {
+        switch (result)
+        {
+            case TerrainSamplerTrueColorProbeResult.MissingChunk:
+                Interlocked.Increment(ref terrainSamplerFallbackTrueColorMissingChunk);
+                break;
+            case TerrainSamplerTrueColorProbeResult.InvalidHeight:
+                Interlocked.Increment(ref terrainSamplerFallbackTrueColorInvalidHeight);
+                break;
+            case TerrainSamplerTrueColorProbeResult.Air:
+                Interlocked.Increment(ref terrainSamplerFallbackTrueColorAir);
+                break;
+            case TerrainSamplerTrueColorProbeResult.ColorError:
+                Interlocked.Increment(ref terrainSamplerFallbackTrueColorErrors);
+                break;
+        }
+    }
+
+    private enum TerrainSamplerTrueColorProbeResult
+    {
+        Hit,
+        MissingChunk,
+        InvalidHeight,
+        Air,
+        ColorError
     }
 
     private static int TerrainSamplerColor(int height, int westHeight, int northHeight, int diagonalHeight, int seaLevel, int landColor, int waterColor, int waterEdgeColor)
@@ -1659,6 +1845,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
             return (nearLand ? waterEdgeColor : waterColor) | unchecked((int)0xFF000000);
         }
 
+        return TerrainSamplerShadeColor(landColor, height, westHeight, northHeight, diagonalHeight, seaLevel);
+    }
+
+    private static int TerrainSamplerShadeColor(int color, int height, int westHeight, int northHeight, int diagonalHeight, int seaLevel)
+    {
         int diagonalDelta = height - diagonalHeight;
         int westDelta = height - westHeight;
         int northDelta = height - northHeight;
@@ -1672,7 +1863,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 ? 0.96f - relief * 0.35f + altitude * 0.5f
                 : 1f + altitude * 0.75f;
 
-        return ColorUtil.ColorMultiply3Clamped(landColor, shade) | unchecked((int)0xFF000000);
+        return ColorUtil.ColorMultiply3Clamped(color, shade) | unchecked((int)0xFF000000);
     }
 
     private bool TryBuildPageFromDb(FastVec2i pageKey, out FastMapPageSnapshot snapshot, out bool skippedByIndex)
@@ -2761,7 +2952,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
                     FastVec2i pageKey = new(centerPage.X + dx, centerPage.Y + dz);
                     if (fallbackPages.ContainsKey(pageKey)
-                        || terrainFallbackDiskCache.MightContain(pageKey)
+                        || CurrentTerrainFallbackDiskCache.MightContain(pageKey)
                         || IsTerrainSamplerFallbackPageReserved(pageKey))
                     {
                         continue;
@@ -3126,6 +3317,20 @@ public sealed class FastPageMapLayer : RGBMapLayer
             terrainSamplerFallbackSkippedDuplicate,
             pageDiskCache.RootPath
         );
+        api.Logger.Notification(
+            "[FastMap] fallback true-colour probes={0}, hits={1}, misses={2}, missingChunk={3}, invalidHeight={4}, air={5}, errors={6}, enabled={7}, palette={8}, snowStart={9}, stride={10}",
+            terrainSamplerFallbackTrueColorProbes,
+            terrainSamplerFallbackTrueColorHits,
+            terrainSamplerFallbackTrueColorMisses,
+            terrainSamplerFallbackTrueColorMissingChunk,
+            terrainSamplerFallbackTrueColorInvalidHeight,
+            terrainSamplerFallbackTrueColorAir,
+            terrainSamplerFallbackTrueColorErrors,
+            colorAccurate && config.EnableTerrainSamplerFallbackTrueColor,
+            fallbackPalette.HasAny,
+            config.TerrainSamplerFallbackSnowStartHeight,
+            config.TerrainSamplerFallbackTrueColorProbeStride
+        );
         api.Logger.Notification("[FastMap] sampler scheduler {0}", TerrainSamplerSchedulerDetail());
     }
 
@@ -3211,6 +3416,13 @@ public sealed class FastPageMapLayer : RGBMapLayer
             + ";nextRetryMs=" + nextRetryDelayMs
             + ";reserved=" + uniquePages + "/" + config.TerrainSamplerFallbackMaxPagesPerSession
             + ";generated=" + fallbackPages
+            + ";trueColorProbes=" + terrainSamplerFallbackTrueColorProbes
+            + ";trueColorHits=" + terrainSamplerFallbackTrueColorHits
+            + ";trueColorMisses=" + terrainSamplerFallbackTrueColorMisses
+            + ";trueColorMissingChunk=" + terrainSamplerFallbackTrueColorMissingChunk
+            + ";trueColorInvalidHeight=" + terrainSamplerFallbackTrueColorInvalidHeight
+            + ";trueColorAir=" + terrainSamplerFallbackTrueColorAir
+            + ";trueColorErrors=" + terrainSamplerFallbackTrueColorErrors
             + ";colorAccurate=" + colorAccurate
             + ";visible=" + visiblePageKeys.Count;
     }

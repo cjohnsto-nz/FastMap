@@ -19,6 +19,9 @@ public sealed class FastMapConfig
     public bool EnableTerrainSamplerFallbackBackgroundGeneration { get; set; } = true;
     public int TerrainSamplerFallbackSampleStep { get; set; } = 4;
     public int TerrainSamplerFallbackResolutionScale { get; set; } = 4;
+    public bool EnableTerrainSamplerFallbackTrueColor { get; set; } = true;
+    public int TerrainSamplerFallbackTrueColorProbeStride { get; set; } = 4;
+    public int TerrainSamplerFallbackSnowStartHeight { get; set; } = 200;
     public int TerrainSamplerFallbackMaxPagesPerSession { get; set; } = 2048;
     public int TerrainSamplerFallbackRadiusChunks { get; set; } = 512;
     public int TerrainSamplerFallbackBackgroundPagesPerPass { get; set; } = 16;
@@ -45,7 +48,7 @@ public sealed class FastMapConfig
     public float PrewarmIntervalSeconds { get; set; } = 2.0f;
     public float PageFlushIntervalSeconds { get; set; } = 5.0f;
     public int PageFlushThreshold { get; set; } = 64;
-    public bool LogStats { get; set; } = false;
+    public bool LogStats { get; set; } = true;
     public float LogStatsIntervalSeconds { get; set; } = 5.0f;
     public bool EnableHitchDiagnostics { get; set; } = false;
     public int HitchDiagnosticThresholdMilliseconds { get; set; } = 100;
@@ -80,6 +83,8 @@ public sealed class FastMapConfig
         ReadyPageQueueBudget = Math.Clamp(ReadyPageQueueBudget, 4, 512);
         TerrainSamplerFallbackSampleStep = Math.Clamp(TerrainSamplerFallbackSampleStep, 1, 16);
         TerrainSamplerFallbackResolutionScale = Math.Clamp(TerrainSamplerFallbackResolutionScale, 1, 32);
+        TerrainSamplerFallbackTrueColorProbeStride = Math.Clamp(TerrainSamplerFallbackTrueColorProbeStride, 1, 32);
+        TerrainSamplerFallbackSnowStartHeight = Math.Clamp(TerrainSamplerFallbackSnowStartHeight, 1, 100000);
         TerrainSamplerFallbackMaxPagesPerSession = Math.Clamp(TerrainSamplerFallbackMaxPagesPerSession, 0, 100000);
         TerrainSamplerFallbackRadiusChunks = Math.Clamp(TerrainSamplerFallbackRadiusChunks, 0, 8192);
         TerrainSamplerFallbackBackgroundPagesPerPass = Math.Clamp(TerrainSamplerFallbackBackgroundPagesPerPass, 1, 1024);

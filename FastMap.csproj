@@ -59,6 +59,7 @@
     <Compile Remove="_tmp_*.cs" />
     <Compile Remove="_ilspy_vsessentials\**\*.cs" />
     <Compile Remove="_ilspy_vslib\**\*.cs" />
+    <Compile Remove="_ilspy_terrain_sampler\**\*.cs" />
     <Compile Remove="tools\**\*.cs" />
   </ItemGroup>
 
@@ -79,6 +80,12 @@
     <Copy SourceFiles="README.md" DestinationFolder="$(FullModPackagePath)" Condition="Exists('README.md')" />
     <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(FullModPackagePath)" />
     <Copy SourceFiles="@(ReferenceCopyLocalPaths)" DestinationFolder="$(FullModPackagePath)" />
+    <ItemGroup>
+      <_FallbackPaletteImages Include="grass.png" Condition="Exists('grass.png')" />
+      <_FallbackPaletteImages Include="water.png" Condition="Exists('water.png')" />
+      <_FallbackPaletteImages Include="snow.png" Condition="Exists('snow.png')" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_FallbackPaletteImages)" DestinationFolder="$(FullModPackagePath)" SkipUnchangedFiles="true" />
 
     <ItemGroup>
       <_ModAssets Include="assets\**\*.*" />

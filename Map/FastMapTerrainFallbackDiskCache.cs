@@ -20,12 +20,15 @@ internal sealed class FastMapTerrainFallbackDiskCache
     private readonly object knownPageFilesLock = new();
     private readonly HashSet<FastVec2i> knownPageFiles = new();
 
-    public FastMapTerrainFallbackDiskCache(string savegameIdentifier, int resolutionScale, bool useHighCompression)
+    public FastMapTerrainFallbackDiskCache(string savegameIdentifier, int resolutionScale, bool useHighCompression, string variant = "")
     {
         this.resolutionScale = Math.Clamp(resolutionScale, 1, 32);
         this.useHighCompression = useHighCompression;
         string worldPath = Path.Combine(GamePaths.DataPath, "FastMap", SanitizePathPart(savegameIdentifier));
-        rootPath = Path.Combine(worldPath, $"terrain-fallback-v1-r{this.resolutionScale}");
+        string folderName = string.IsNullOrWhiteSpace(variant)
+            ? $"terrain-fallback-v1-r{this.resolutionScale}"
+            : $"terrain-fallback-v1-r{this.resolutionScale}-{SanitizePathPart(variant)}";
+        rootPath = Path.Combine(worldPath, folderName);
         GamePaths.EnsurePathExists(rootPath);
         IndexExistingPages();
     }

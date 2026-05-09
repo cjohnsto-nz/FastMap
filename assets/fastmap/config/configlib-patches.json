@@ -136,6 +136,40 @@
       }
     },
     {
+      "code": "EnableTerrainSamplerFallbackTrueColor",
+      "type": "boolean",
+      "default": true,
+      "clientSide": true,
+      "ingui": "True-colour fallback probes",
+      "comment": "When true-colour world maps are enabled, use sparse loaded-surface block colour probes to improve synthetic terrain-sampler fallback pages without sampling every pixel."
+    },
+    {
+      "code": "TerrainSamplerFallbackTrueColorProbeStride",
+      "type": "integer",
+      "default": 4,
+      "clientSide": true,
+      "ingui": "True-colour probe stride",
+      "comment": "Sparse fallback true-colour probe spacing in low-resolution fallback cells. 4 means one loaded-surface colour probe per 4x4 fallback cells.",
+      "range": {
+        "min": 1,
+        "max": 32,
+        "step": 1
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackSnowStartHeight",
+      "type": "integer",
+      "default": 200,
+      "clientSide": true,
+      "ingui": "Fallback snow height",
+      "comment": "When true-colour fallback palettes are available, synthetic terrain-sampler fallback pixels at or above this height use the snow palette.",
+      "range": {
+        "min": 1,
+        "max": 100000,
+        "step": 1
+      }
+    },
+    {
       "code": "TerrainSamplerFallbackMaxPagesPerSession",
       "type": "integer",
       "default": 2048,
