@@ -2447,8 +2447,13 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private static bool IsLake(Block block)
     {
-        return block.BlockMaterial == EnumBlockMaterial.Water
+        return IsWaterMaterial(block.BlockMaterial)
             || (block.BlockMaterial == EnumBlockMaterial.Ice && block.Code?.Path != "glacierice");
+    }
+
+    private static bool IsWaterMaterial(EnumBlockMaterial material)
+    {
+        return material.ToString() == "Water" || (int)material == 8;
     }
 
     private bool IsLake(int blockId)

@@ -1,15 +1,35 @@
+param(
+    [ValidateSet("1.21", "1.22")]
+    [string]$GameVersion = "1.22",
+
+    [string]$Configuration = "Release",
+
+    [switch]$NoLaunch
+)
+
 # FastMap deployment script
-# Stops the game, builds the mod, packages it into the VS Mods folder, and relaunches the client.
+# Stops the game, builds the mod, packages it into the VS Mods folder, and optionally relaunches the selected client.
 
 $ErrorActionPreference = 'Stop'
 
 $ProjectName = 'FastMap'
 $ProjectRoot = $PSScriptRoot
 $ProjectFile = Join-Path $ProjectRoot 'FastMap.csproj'
-$Configuration = 'Release'
 $ModsDir = 'C:\Users\chris\AppData\Roaming\VintagestoryData\Mods'
 $VSProcessName = 'Vintagestory'
-$VSExePath = 'C:\Users\chris\AppData\Roaming\Vintagestory\Vintagestory.exe'
+$VersionKey = $GameVersion -replace "\.", ""
+$VersionEnvName = "VINTAGE_STORY_$VersionKey"
+$ConfiguredGamePath = [Environment]::GetEnvironmentVariable($VersionEnvName, "User")
+
+if ([string]::IsNullOrWhiteSpace($ConfiguredGamePath)) {
+    throw "Environment variable '$VersionEnvName' is not set. Run tools/Set-VintageStoryEnv.ps1 for version $GameVersion first."
+}
+
+if (-not (Test-Path -LiteralPath $ConfiguredGamePath)) {
+    throw "Configured game path '$ConfiguredGamePath' does not exist."
+}
+
+$VSExePath = Join-Path $ConfiguredGamePath 'Vintagestory.exe'
 $SourceDir = Join-Path $ProjectRoot "bin\$Configuration\ModPackage\$ProjectName"
 $TempDir = Join-Path $env:TEMP 'FastMapTempDeploy'
 $ModConfigPath = 'C:\Users\chris\AppData\Roaming\VintagestoryData\ModConfig\fastmap.json'
@@ -27,13 +47,13 @@ if (Test-Path (Join-Path $ProjectRoot 'bin')) { Remove-Item -LiteralPath (Join-P
 if (Test-Path (Join-Path $ProjectRoot 'obj')) { Remove-Item -LiteralPath (Join-Path $ProjectRoot 'obj') -Recurse -Force }
 
 Write-Host 'Cleaning project...' -ForegroundColor Cyan
-dotnet clean $ProjectFile -c $Configuration
+dotnet clean $ProjectFile -c $Configuration "-p:GameVersion=$GameVersion" "-p:GamePath=$ConfiguredGamePath"
 if ($LASTEXITCODE -ne 0) {
     throw 'dotnet clean failed.'
 }
 
-Write-Host 'Building FastMap...' -ForegroundColor Cyan
-dotnet build $ProjectFile -c $Configuration
+Write-Host "Building FastMap against Vintage Story $GameVersion..." -ForegroundColor Cyan
+dotnet build $ProjectFile -c $Configuration "-p:GameVersion=$GameVersion" "-p:GamePath=$ConfiguredGamePath"
 if ($LASTEXITCODE -ne 0) {
     throw 'dotnet build failed.'
 }
@@ -53,7 +73,7 @@ if (Test-Path $ModInfoPath) {
     }
 }
 
-$ZipFileName = "${ModId}_$Version.zip"
+$ZipFileName = "${ModId}_${Version}.zip"
 $ZipFilePath = Join-Path $ModsDir $ZipFileName
 
 Write-Host "Deploying mod as '$ZipFileName' to '$ModsDir'..." -ForegroundColor Cyan
@@ -80,5 +100,9 @@ if (Test-Path $ModConfigPath) {
     Remove-Item -LiteralPath $ModConfigPath -Force
 }
 
-Write-Host "`nDeployment complete. Launching Vintage Story..." -ForegroundColor Green
-Start-Process -FilePath $VSExePath
+if (-not $NoLaunch) {
+    Write-Host "`nDeployment complete. Launching Vintage Story $GameVersion..." -ForegroundColor Green
+    Start-Process -FilePath $VSExePath
+} else {
+    Write-Host "`nDeployment complete. Launch skipped for Vintage Story $GameVersion." -ForegroundColor Green
+}
