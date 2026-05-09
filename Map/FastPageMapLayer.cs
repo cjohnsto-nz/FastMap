@@ -217,8 +217,10 @@ public sealed class FastPageMapLayer : RGBMapLayer
         nativeDbPageBuildSemaphore = new SemaphoreSlim(config.MaxParallelNativeDbPageBuilds);
         pageDiskCache = new FastMapPageDiskCache(api.World.SavegameIdentifier, config.EnableCompressedCache, config.UseFilteredCache, config.UseHighCompressionCache);
         terrainFallbackDiskCache = new FastMapTerrainFallbackDiskCache(api.World.SavegameIdentifier, config.TerrainSamplerFallbackResolutionScale, config.UseHighCompressionCache);
-        textureAtlas = config.EnableTextureAtlas ? new FastMapTextureAtlas(capi) : null;
-        fallbackTextureAtlas = config.EnableTextureAtlas ? new FastMapTextureAtlas(capi) : null;
+        textureAtlas = config.EnableTextureAtlas ? new FastMapTextureAtlas(capi, FastMapPageComponent.PageSize) : null;
+        fallbackTextureAtlas = config.EnableTextureAtlas
+            ? new FastMapTextureAtlas(capi, FastMapTerrainFallbackDiskCache.LowResolutionSize(config.TerrainSamplerFallbackResolutionScale))
+            : null;
 
         OpenMapDatabase();
         api.Event.ChunkDirty += OnChunkDirty;
@@ -2405,6 +2407,12 @@ public sealed class FastPageMapLayer : RGBMapLayer
             page.Upload();
         }
 
+        if (page.HasGpuTexture && page.HasPixelBuffer)
+        {
+            page.ReleasePixelBuffer();
+            Interlocked.Increment(ref pagePixelBuffersReleased);
+        }
+
         page.LastTouchedMs = capi.ElapsedMilliseconds;
         Interlocked.Increment(ref pageUploads);
         Interlocked.Add(ref pageUploadMs, stopwatch.ElapsedMilliseconds);
@@ -3042,9 +3050,18 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         statsAccum = 0f;
         GetReadyPageQueueDiagnostics(out int readyFullResPages, out int readyLowResPages, out long readyApproxMb);
+        GetResidentPageDiagnostics(
+            out int trueGpuPages,
+            out int fallbackGpuPages,
+            out int truePixelPages,
+            out int fallbackPixelPages,
+            out long truePixelMb,
+            out long fallbackPixelMb
+        );
         api.Logger.Notification(
-            "[FastMap] pages loaded={0}, visible={1}, queuedPages={2}, activeLoads={3}, readyPages={4}, readyLowRes={5}, readyFullRes={6}, readyApproxMb={7}, managedMb={8}, readyPatches={9}, diskHits={10}, diskMisses={11}, diskIndexSkips={12}, dbHits={13}, dbMisses={14}, dbIndexSkips={15}, loadBatches={16}, loadItems={17}, pixelReleases={18}, pixelReloads={19}, samplerPages={20}, samplerQueued={21}, samplerSkipped={22}, samplerQueue={23}, samplerActive={24}, samplerCacheQueue={25}, samplerCacheActive={26}, samplerCacheHits={27}, samplerCacheMisses={28}, samplerBuildFails={29}, samplerGenDefers={30}, samplerRetries={31}, samplerRetryExhausted={32}, samplerSamples={33}, samplerSea={34}, samplerNearSea={35}, generated={36}, missing={37}, uploads={38}, saves={39}",
+            "[FastMap] pages loaded={0}, fallbackLoaded={1}, visible={2}, queuedPages={3}, activeLoads={4}, readyPages={5}, readyLowRes={6}, readyFullRes={7}, readyApproxMb={8}, trueGpu={9}, fallbackGpu={10}, truePix={11}, fallbackPix={12}, truePixMb={13}, fallbackPixMb={14}, managedMb={15}, readyPatches={16}, diskHits={17}, diskMisses={18}, diskIndexSkips={19}, dbHits={20}, dbMisses={21}, dbIndexSkips={22}, loadBatches={23}, loadItems={24}, pixelReleases={25}, pixelReloads={26}, samplerPages={27}, samplerQueued={28}, samplerSkipped={29}, samplerQueue={30}, samplerActive={31}, samplerCacheQueue={32}, samplerCacheActive={33}, samplerCacheHits={34}, samplerCacheMisses={35}, samplerBuildFails={36}, samplerGenDefers={37}, samplerRetries={38}, samplerRetryExhausted={39}, samplerSamples={40}, samplerSea={41}, samplerNearSea={42}, generated={43}, missing={44}, uploads={45}, saves={46}",
             pages.Count,
+            fallbackPages.Count,
             visiblePageKeys.Count,
             QueuedPageLoadCount(),
             Volatile.Read(ref activePageLoadTasks),
@@ -3052,6 +3069,12 @@ public sealed class FastPageMapLayer : RGBMapLayer
             readyLowResPages,
             readyFullResPages,
             readyApproxMb,
+            trueGpuPages,
+            fallbackGpuPages,
+            truePixelPages,
+            fallbackPixelPages,
+            truePixelMb,
+            fallbackPixelMb,
             GC.GetTotalMemory(false) / (1024 * 1024),
             readyPatches.Count,
             pageDiskHits,
@@ -3086,12 +3109,17 @@ public sealed class FastPageMapLayer : RGBMapLayer
             pageSaves
         );
         api.Logger.Notification(
-            "[FastMap] page timings loadMs={0}, uploadMs={1}, generationMs={2}, tileDbHits={3}, atlases={4}, samplerSkipDisabled={5}, samplerSkipLimit={6}, samplerSkipRadius={7}, samplerSkipDuplicate={8}, path={9}",
+            "[FastMap] page timings loadMs={0}, uploadMs={1}, generationMs={2}, tileDbHits={3}, atlases={4}, trueAtlases={5}, fallbackAtlases={6}, trueAtlasMb={7}, fallbackAtlasMb={8}, fallbackSlot={9}, samplerSkipDisabled={10}, samplerSkipLimit={11}, samplerSkipRadius={12}, samplerSkipDuplicate={13}, path={14}",
             pageLoadMs,
             pageUploadMs,
             generationMs,
             tileDbHits,
             (textureAtlas?.AtlasCount ?? 0) + (fallbackTextureAtlas?.AtlasCount ?? 0),
+            textureAtlas?.AtlasCount ?? 0,
+            fallbackTextureAtlas?.AtlasCount ?? 0,
+            (textureAtlas?.ApproxTextureBytes ?? 0) / (1024 * 1024),
+            (fallbackTextureAtlas?.ApproxTextureBytes ?? 0) / (1024 * 1024),
+            fallbackTextureAtlas?.SlotSize ?? FastMapPageComponent.PageSize,
             terrainSamplerFallbackSkippedDisabled,
             terrainSamplerFallbackSkippedLimit,
             terrainSamplerFallbackSkippedRadius,
@@ -3143,6 +3171,14 @@ public sealed class FastPageMapLayer : RGBMapLayer
         int trueQueue = QueuedPageLoadCount();
         long fallbackPages = Interlocked.Read(ref terrainSamplerFallbackPages);
         GetReadyPageQueueDiagnostics(out int readyFullResPages, out int readyLowResPages, out long readyApproxMb);
+        GetResidentPageDiagnostics(
+            out int trueGpuPages,
+            out int fallbackGpuPages,
+            out int truePixelPages,
+            out int fallbackPixelPages,
+            out long truePixelMb,
+            out long fallbackPixelMb
+        );
         int uniquePages;
         lock (terrainSamplerLoadLock)
         {
@@ -3159,6 +3195,13 @@ public sealed class FastPageMapLayer : RGBMapLayer
             + ";readyLowRes=" + readyLowResPages
             + ";readyFullRes=" + readyFullResPages
             + ";readyApproxMb=" + readyApproxMb
+            + ";fallbackLoaded=" + this.fallbackPages.Count
+            + ";trueGpu=" + trueGpuPages
+            + ";fallbackGpu=" + fallbackGpuPages
+            + ";truePix=" + truePixelPages
+            + ";fallbackPix=" + fallbackPixelPages
+            + ";truePixMb=" + truePixelMb
+            + ";fallbackPixMb=" + fallbackPixelMb
             + ";managedMb=" + (GC.GetTotalMemory(false) / (1024 * 1024))
             + ";cacheQueue=" + cacheQueue
             + ";cacheActive=" + Volatile.Read(ref activeTerrainFallbackCacheLoadTasks)
@@ -3170,6 +3213,53 @@ public sealed class FastPageMapLayer : RGBMapLayer
             + ";generated=" + fallbackPages
             + ";colorAccurate=" + colorAccurate
             + ";visible=" + visiblePageKeys.Count;
+    }
+
+    private void GetResidentPageDiagnostics(
+        out int trueGpuPages,
+        out int fallbackGpuPages,
+        out int truePixelPages,
+        out int fallbackPixelPages,
+        out long truePixelMb,
+        out long fallbackPixelMb)
+    {
+        trueGpuPages = 0;
+        fallbackGpuPages = 0;
+        truePixelPages = 0;
+        fallbackPixelPages = 0;
+        long truePixelBytes = 0;
+        long fallbackPixelBytes = 0;
+
+        foreach (FastMapPageComponent page in pages.Values)
+        {
+            if (page.HasGpuTexture)
+            {
+                trueGpuPages++;
+            }
+
+            if (page.HasPixelBuffer)
+            {
+                truePixelPages++;
+                truePixelBytes += page.PixelBufferBytes;
+            }
+        }
+
+        foreach (FastMapPageComponent page in fallbackPages.Values)
+        {
+            if (page.HasGpuTexture)
+            {
+                fallbackGpuPages++;
+            }
+
+            if (page.HasPixelBuffer)
+            {
+                fallbackPixelPages++;
+                fallbackPixelBytes += page.PixelBufferBytes;
+            }
+        }
+
+        truePixelMb = truePixelBytes / (1024 * 1024);
+        fallbackPixelMb = fallbackPixelBytes / (1024 * 1024);
     }
 
     private long NextTerrainSamplerRetryDelayMsLocked()

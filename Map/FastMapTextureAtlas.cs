@@ -16,30 +16,41 @@ internal sealed class FastMapTextureAtlas : IDisposable
     private readonly Dictionary<FastVec2i, FastMapAtlasSlot> slotsByPage = new();
     private readonly List<AtlasTexture> atlases = new();
     private readonly int atlasSize;
+    private readonly int slotSize;
     private readonly int slotsPerAxis;
     private bool disposed;
 
-    public FastMapTextureAtlas(ICoreClientAPI capi)
+    public FastMapTextureAtlas(ICoreClientAPI capi, int slotSize)
     {
         this.capi = capi;
-        int maxTextureSize = Math.Max(FastMapPageComponent.PageSize, capi.Render.GlGetMaxTextureSize());
+        this.slotSize = Math.Clamp(slotSize, 1, FastMapPageComponent.PageSize);
+        int maxTextureSize = Math.Max(this.slotSize, capi.Render.GlGetMaxTextureSize());
         atlasSize = Math.Min(PreferredAtlasSize, maxTextureSize);
-        atlasSize -= atlasSize % FastMapPageComponent.PageSize;
-        if (atlasSize < FastMapPageComponent.PageSize)
+        atlasSize -= atlasSize % this.slotSize;
+        if (atlasSize < this.slotSize)
         {
-            atlasSize = FastMapPageComponent.PageSize;
+            atlasSize = this.slotSize;
         }
 
-        slotsPerAxis = Math.Max(1, atlasSize / FastMapPageComponent.PageSize);
+        slotsPerAxis = Math.Max(1, atlasSize / this.slotSize);
     }
 
     public int AtlasCount => atlases.Count;
 
-    public FastMapAtlasSlot Upload(FastVec2i pageKey, int[] pixels)
+    public int SlotSize => slotSize;
+
+    public long ApproxTextureBytes => (long)atlases.Count * atlasSize * atlasSize * sizeof(int);
+
+    public FastMapAtlasSlot Upload(FastVec2i pageKey, int[] pixels, int pixelSize)
     {
         if (disposed)
         {
             throw new ObjectDisposedException(nameof(FastMapTextureAtlas));
+        }
+
+        if (pixelSize != slotSize || pixels.Length != slotSize * slotSize)
+        {
+            throw new ArgumentException("FastMap atlas upload dimensions must match the atlas slot size.", nameof(pixels));
         }
 
         if (!slotsByPage.TryGetValue(pageKey, out FastMapAtlasSlot? slot))
@@ -54,8 +65,8 @@ internal sealed class FastMapTextureAtlas : IDisposable
             0,
             slot.SlotX,
             slot.SlotY,
-            FastMapPageComponent.PageSize,
-            FastMapPageComponent.PageSize,
+            slotSize,
+            slotSize,
             PixelFormat.Rgba,
             PixelType.UnsignedByte,
             pixels
@@ -183,15 +194,15 @@ internal sealed class FastMapTextureAtlas : IDisposable
 
             int index = freeSlots.Pop();
             usedSlots.Add(index);
-            int slotX = index % slotsPerAxis * FastMapPageComponent.PageSize;
-            int slotY = index / slotsPerAxis * FastMapPageComponent.PageSize;
-            slot = new FastMapAtlasSlot(owner, pageKey, TextureId, slotX, slotY, atlasSize, FastMapPageComponent.PageSize);
+            int slotX = index % slotsPerAxis * owner.slotSize;
+            int slotY = index / slotsPerAxis * owner.slotSize;
+            slot = new FastMapAtlasSlot(owner, pageKey, TextureId, slotX, slotY, atlasSize, owner.slotSize);
             return true;
         }
 
         public void Release(FastMapAtlasSlot slot)
         {
-            int index = slot.SlotY / FastMapPageComponent.PageSize * slotsPerAxis + slot.SlotX / FastMapPageComponent.PageSize;
+            int index = slot.SlotY / owner.slotSize * slotsPerAxis + slot.SlotX / owner.slotSize;
             if (usedSlots.Remove(index))
             {
                 freeSlots.Push(index);

@@ -20,12 +20,12 @@ public sealed class FastMapConfig
     public int TerrainSamplerFallbackSampleStep { get; set; } = 4;
     public int TerrainSamplerFallbackResolutionScale { get; set; } = 4;
     public int TerrainSamplerFallbackMaxPagesPerSession { get; set; } = 2048;
-    public int TerrainSamplerFallbackRadiusChunks { get; set; } = 384;
+    public int TerrainSamplerFallbackRadiusChunks { get; set; } = 512;
     public int TerrainSamplerFallbackBackgroundPagesPerPass { get; set; } = 16;
     public int TerrainSamplerFallbackMaxParallelBuilds { get; set; } = 4;
     public int TerrainSamplerFallbackMaxRetries { get; set; } = 3;
     public int TerrainSamplerFallbackRetryDelayMilliseconds { get; set; } = 5000;
-    public float WorldMapMinZoomLevel { get; set; } = 0.05f;
+    public float WorldMapMinZoomLevel { get; set; } = 0.1f;
     public float WorldMapMaxZoomLevel { get; set; } = 6.0f;
     public float ViewportLoadScale { get; set; } = 1.5f;
     public int ViewportPageRetentionRings { get; set; } = 1;
@@ -45,7 +45,7 @@ public sealed class FastMapConfig
     public float PrewarmIntervalSeconds { get; set; } = 2.0f;
     public float PageFlushIntervalSeconds { get; set; } = 5.0f;
     public int PageFlushThreshold { get; set; } = 64;
-    public bool LogStats { get; set; } = true;
+    public bool LogStats { get; set; } = false;
     public float LogStatsIntervalSeconds { get; set; } = 5.0f;
     public bool EnableHitchDiagnostics { get; set; } = false;
     public int HitchDiagnosticThresholdMilliseconds { get; set; } = 100;

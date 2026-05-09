@@ -15,6 +15,7 @@ internal sealed class FastMapPageComponent : MapComponent
     private readonly Vec3d worldPos;
     private Vec2f viewPos = new();
     private int[]? pixels;
+    private int texturePixelSize = PageSize;
     private readonly uint[] validRows = new uint[ChunksPerPage];
     private LoadedTexture? texture;
     private FastMapAtlasSlot? atlasSlot;
@@ -38,6 +39,10 @@ internal sealed class FastMapPageComponent : MapComponent
     public bool HasGpuTexture => atlasSlot != null || (texture != null && !texture.Disposed);
 
     public bool HasPixelBuffer => pixels != null;
+
+    public long PixelBufferBytes => pixels == null ? 0 : (long)pixels.Length * sizeof(int);
+
+    public int TexturePixelSize => texturePixelSize;
 
     public long LastTouchedMs { get; set; }
 
@@ -87,15 +92,17 @@ internal sealed class FastMapPageComponent : MapComponent
     {
         if (snapshot.IsLowResolution)
         {
-            int lowResolutionSize = FastMapTerrainFallbackDiskCache.LowResolutionSize(snapshot.ResolutionScale);
-            pixels = FastMapTerrainFallbackDiskCache.Expand(snapshot.Pixels, lowResolutionSize, snapshot.ResolutionScale);
+            texturePixelSize = FastMapTerrainFallbackDiskCache.LowResolutionSize(snapshot.ResolutionScale);
+            pixels = snapshot.Pixels;
         }
         else if (snapshot.TransferPixelsToPage)
         {
+            texturePixelSize = PageSize;
             pixels = snapshot.Pixels;
         }
         else
         {
+            texturePixelSize = PageSize;
             int[] pagePixels = EnsurePixelBuffer();
             System.Array.Copy(snapshot.Pixels, pagePixels, pagePixels.Length);
         }
@@ -149,7 +156,7 @@ internal sealed class FastMapPageComponent : MapComponent
 
         if (texture == null || texture.Disposed)
         {
-            texture = new LoadedTexture(capi, 0, PageSize, PageSize);
+            texture = new LoadedTexture(capi, 0, texturePixelSize, texturePixelSize);
         }
 
         capi.Render.LoadOrUpdateTextureFromRgba(pixels, false, 0, ref texture);
@@ -172,7 +179,7 @@ internal sealed class FastMapPageComponent : MapComponent
         }
 
         FastMapAtlasSlot? previousSlot = atlasSlot;
-        atlasSlot = atlas.Upload(PageKey, pixels);
+        atlasSlot = atlas.Upload(PageKey, pixels, texturePixelSize);
         if (previousSlot != atlasSlot)
         {
             visibleChunksMeshDirty = true;
@@ -302,7 +309,12 @@ internal sealed class FastMapPageComponent : MapComponent
 
     private int[] EnsurePixelBuffer()
     {
-        pixels ??= new int[PixelCount];
+        if (pixels == null || texturePixelSize != PageSize)
+        {
+            texturePixelSize = PageSize;
+            pixels = new int[PixelCount];
+        }
+
         return pixels;
     }
 
