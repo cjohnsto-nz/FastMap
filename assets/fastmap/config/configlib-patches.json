@@ -191,10 +191,10 @@
     {
       "code": "TerrainSamplerFallbackSnowStartHeight",
       "type": "integer",
-      "default": 200,
+      "default": 250,
       "clientSide": true,
       "ingui": "Fallback snow height",
-      "comment": "When true-colour fallback palettes are available, synthetic terrain-sampler fallback pixels at or above this height use the snow palette.",
+      "comment": "Synthetic terrain-sampler fallback pixels at or above this height can use the snow palette when adjusted temperature is below vanilla's snow threshold.",
       "range": {
         "min": 1,
         "max": 100000,

@@ -4,11 +4,13 @@ param(
 
     [string]$Configuration = "Release",
 
-    [switch]$NoLaunch
+    [switch]$NoLaunch,
+
+    [switch]$NoCloseVS
 )
 
 # FastMap deployment script
-# Stops the game, builds the mod, packages it into the VS Mods folder, and optionally relaunches the selected client.
+# Stops the game unless -NoCloseVS is set, builds the mod, packages it into the VS Mods folder, and optionally relaunches the selected client.
 
 $ErrorActionPreference = 'Stop'
 
@@ -36,7 +38,9 @@ $ModConfigPath = 'C:\Users\chris\AppData\Roaming\VintagestoryData\ModConfig\fast
 
 Write-Host 'Checking for running Vintage Story process...' -ForegroundColor Cyan
 $vsProcess = Get-Process -Name $VSProcessName -ErrorAction SilentlyContinue
-if ($vsProcess) {
+if ($vsProcess -and $NoCloseVS) {
+    Write-Host 'Vintage Story is running. Leaving it open because -NoCloseVS was specified.'
+} elseif ($vsProcess) {
     Write-Host 'Vintage Story is running. Stopping process...'
     Stop-Process -Name $VSProcessName -Force
     Start-Sleep -Seconds 2
@@ -100,9 +104,11 @@ if (Test-Path $ModConfigPath) {
     Remove-Item -LiteralPath $ModConfigPath -Force
 }
 
-if (-not $NoLaunch) {
+if (-not $NoLaunch -and -not ($NoCloseVS -and $vsProcess)) {
     Write-Host "`nDeployment complete. Launching Vintage Story $GameVersion..." -ForegroundColor Green
     Start-Process -FilePath $VSExePath
+} elseif ($NoCloseVS -and $vsProcess) {
+    Write-Host "`nDeployment complete. Vintage Story was left running, so launch was skipped." -ForegroundColor Green
 } else {
     Write-Host "`nDeployment complete. Launch skipped for Vintage Story $GameVersion." -ForegroundColor Green
 }

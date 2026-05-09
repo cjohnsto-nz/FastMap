@@ -69,6 +69,19 @@ internal sealed class FastMapFallbackPalette
         return true;
     }
 
+    public bool TryGetSnowColor(int height, int worldX, int worldZ, out int color)
+    {
+        if (snow.Length == 0)
+        {
+            color = 0;
+            return false;
+        }
+
+        uint hash = Mix((uint)worldX, (uint)worldZ, (uint)height);
+        color = snow[hash % (uint)snow.Length];
+        return true;
+    }
+
     public bool TryGetBrownColor(int height, int worldX, int worldZ, out int color)
     {
         if (brown.Length == 0)

@@ -21,7 +21,7 @@ public sealed class FastMapConfig
     public int TerrainSamplerFallbackResolutionScale { get; set; } = 4;
     public bool EnableTerrainSamplerFallbackTrueColor { get; set; } = true;
     public int TerrainSamplerFallbackTrueColorProbeStride { get; set; } = 4;
-    public int TerrainSamplerFallbackSnowStartHeight { get; set; } = 200;
+    public int TerrainSamplerFallbackSnowStartHeight { get; set; } = 250;
     public bool UseBrownTerrainFallbackPalette { get; set; } = false;
     public bool EnableTrueColorAirSurfaceRepair { get; set; } = true;
     public int TrueColorAirSurfaceRepairDepth { get; set; } = 32;
@@ -56,7 +56,7 @@ public sealed class FastMapConfig
     public float LogStatsIntervalSeconds { get; set; } = 5.0f;
     public bool LogTrueColorBrightSamples { get; set; } = false;
     public bool EnableTerrainSamplerRainfallLayer { get; set; } = false;
-    public bool EnableTerrainSamplerTemperatureLayer { get; set; } = false;
+    public bool EnableTerrainSamplerTemperatureLayer { get; set; } = true;
     public bool EnableTerrainSamplerForestDensityLayer { get; set; } = false;
     public bool EnableTerrainSamplerShrubDensityLayer { get; set; } = false;
     public bool EnableHitchDiagnostics { get; set; } = false;
