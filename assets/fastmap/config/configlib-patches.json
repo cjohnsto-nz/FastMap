@@ -170,6 +170,43 @@
       }
     },
     {
+      "code": "UseBrownTerrainFallbackPalette",
+      "type": "boolean",
+      "default": true,
+      "clientSide": true,
+      "ingui": "Brown terrain fallback",
+      "comment": "Use contrast-adjusted colours extracted from map-bkg.png for synthetic terrain-sampler fallback pages in both normal and true-colour map modes."
+    },
+    {
+      "code": "EnableTrueColorAirSurfaceRepair",
+      "type": "boolean",
+      "default": true,
+      "clientSide": true,
+      "ingui": "Repair air true-colour surface",
+      "comment": "When true-colour map generation samples air at the rain-height surface, scan downward for a real block before colouring the pixel. This helps avoid white cave-mouth pixels."
+    },
+    {
+      "code": "TrueColorAirSurfaceRepairDepth",
+      "type": "integer",
+      "default": 32,
+      "clientSide": true,
+      "ingui": "Air surface repair depth",
+      "comment": "Maximum number of blocks below the rain-height surface to search for a real block when repairing air true-colour samples.",
+      "range": {
+        "min": 1,
+        "max": 64,
+        "step": 1
+      }
+    },
+    {
+      "code": "TrueColorAirFallbackColor",
+      "type": "text",
+      "default": "#282828",
+      "clientSide": true,
+      "ingui": "Air true-colour fallback",
+      "comment": "Hex colour used when true-colour map generation still resolves to air after the air-surface repair search."
+    },
+    {
       "code": "TerrainSamplerFallbackMaxPagesPerSession",
       "type": "integer",
       "default": 2048,
@@ -434,6 +471,14 @@
         "max": 120.0,
         "step": 1.0
       }
+    },
+    {
+      "code": "LogTrueColorBrightSamples",
+      "type": "boolean",
+      "default": false,
+      "clientSide": true,
+      "ingui": "Log bright true-colour blocks",
+      "comment": "Log the first near-white true-colour sample per block type, including base/random/final colours and block colour-map metadata. Useful for diagnosing white rock map pixels."
     },
     {
       "code": "EnableHitchDiagnostics",

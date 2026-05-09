@@ -12,17 +12,20 @@ internal sealed class FastMapFallbackPalette
     private readonly int[] grass;
     private readonly int[] water;
     private readonly int[] snow;
+    private readonly int[] brown;
 
-    private FastMapFallbackPalette(int[] grass, int[] water, int[] snow)
+    private FastMapFallbackPalette(int[] grass, int[] water, int[] snow, int[] brown)
     {
         this.grass = grass;
         this.water = water;
         this.snow = snow;
+        this.brown = brown;
     }
 
     public bool HasGrass => grass.Length > 0;
     public bool HasWater => water.Length > 0;
     public bool HasSnow => snow.Length > 0;
+    public bool HasBrown => brown.Length > 0;
     public bool HasAny => HasGrass || HasWater || HasSnow;
 
     public static FastMapFallbackPalette Load(ICoreAPI api)
@@ -31,15 +34,17 @@ internal sealed class FastMapFallbackPalette
         int[] grass = LoadPalette(api, assemblyDirectory, "grass.png");
         int[] water = LoadPalette(api, assemblyDirectory, "water.png");
         int[] snow = LoadPalette(api, assemblyDirectory, "snow.png");
+        int[] brown = LoadPalette(api, assemblyDirectory, "map-bkg.png", warnIfMissing: false);
 
         api.Logger.Notification(
-            "[FastMap] Terrain fallback palettes loaded: grass={0}, water={1}, snow={2}, path={3}",
+            "[FastMap] Terrain fallback palettes loaded: grass={0}, water={1}, snow={2}, brown={3}, path={4}",
             grass.Length,
             water.Length,
             snow.Length,
+            brown.Length,
             assemblyDirectory);
 
-        return new FastMapFallbackPalette(grass, water, snow);
+        return new FastMapFallbackPalette(grass, water, snow, brown);
     }
 
     public bool TryGetColor(int height, int seaLevel, int snowStartHeight, int worldX, int worldZ, out int color, out bool flatten)
@@ -64,12 +69,29 @@ internal sealed class FastMapFallbackPalette
         return true;
     }
 
-    private static int[] LoadPalette(ICoreAPI api, string directory, string filename)
+    public bool TryGetBrownColor(int height, int worldX, int worldZ, out int color)
+    {
+        if (brown.Length == 0)
+        {
+            color = 0;
+            return false;
+        }
+
+        uint hash = Mix((uint)worldX, (uint)worldZ, (uint)height);
+        color = brown[hash % (uint)brown.Length];
+        return true;
+    }
+
+    private static int[] LoadPalette(ICoreAPI api, string directory, string filename, bool warnIfMissing = true)
     {
         string path = Path.Combine(directory, filename);
         if (!File.Exists(path))
         {
-            api.Logger.Warning("[FastMap] Terrain fallback palette file not found: {0}", path);
+            if (warnIfMissing)
+            {
+                api.Logger.Warning("[FastMap] Terrain fallback palette file not found: {0}", path);
+            }
+
             return Array.Empty<int>();
         }
 

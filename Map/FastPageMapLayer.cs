@@ -106,9 +106,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private bool[] blockIsLakeByBlockId = Array.Empty<bool>();
     private bool[] blockIsSnowByBlockId = Array.Empty<bool>();
     private int fallbackLandColor = unchecked((int)0xFFAC8858);
+    private int trueColorAirFallbackColor = unchecked((int)0xFF282828);
     private FastMapTerrainSamplerAdapter? terrainSamplerAdapter;
     private bool terrainSamplerUnavailableLogged;
     private readonly ConcurrentDictionary<string, byte> loggedColorAccurateFallbacks = new();
+    private readonly ConcurrentDictionary<string, byte> loggedTrueColorBrightSamples = new();
     private readonly object surfaceTileCacheLock = new();
     private readonly Dictionary<FastVec2i, FastMapSurfaceTile> surfaceTileCache = new();
     private bool colorAccurate;
@@ -225,12 +227,16 @@ public sealed class FastPageMapLayer : RGBMapLayer
         config.Normalize();
         nativeDbPageBuildSemaphore = new SemaphoreSlim(config.MaxParallelNativeDbPageBuilds);
         pageDiskCache = new FastMapPageDiskCache(api.World.SavegameIdentifier, config.EnableCompressedCache, config.UseFilteredCache, config.UseHighCompressionCache);
-        terrainFallbackDiskCache = new FastMapTerrainFallbackDiskCache(api.World.SavegameIdentifier, config.TerrainSamplerFallbackResolutionScale, config.UseHighCompressionCache);
+        terrainFallbackDiskCache = new FastMapTerrainFallbackDiskCache(
+            api.World.SavegameIdentifier,
+            config.TerrainSamplerFallbackResolutionScale,
+            config.UseHighCompressionCache,
+            NormalFallbackCacheVariant());
         trueColorTerrainFallbackDiskCache = new FastMapTerrainFallbackDiskCache(
             api.World.SavegameIdentifier,
             config.TerrainSamplerFallbackResolutionScale,
             config.UseHighCompressionCache,
-            "truecolour-palette-v3-h" + config.TerrainSamplerFallbackSnowStartHeight);
+            TrueColorFallbackCacheVariant());
         fallbackPalette = FastMapFallbackPalette.Load(api);
         textureAtlas = config.EnableTextureAtlas ? new FastMapTextureAtlas(capi, FastMapPageComponent.PageSize) : null;
         fallbackTextureAtlas = config.EnableTextureAtlas
@@ -248,6 +254,18 @@ public sealed class FastPageMapLayer : RGBMapLayer
         colorAccurate && config.EnableTerrainSamplerFallbackTrueColor
             ? trueColorTerrainFallbackDiskCache
             : terrainFallbackDiskCache;
+
+    private string NormalFallbackCacheVariant()
+    {
+        string palette = config.UseBrownTerrainFallbackPalette ? "brown" : "vanilla";
+        return "normal-" + palette + "-v2";
+    }
+
+    private string TrueColorFallbackCacheVariant()
+    {
+        string palette = config.UseBrownTerrainFallbackPalette ? "brown" : "palette";
+        return "truecolour-" + palette + "-v4-h" + config.TerrainSamplerFallbackSnowStartHeight;
+    }
 
     public override void OnLoaded()
     {
@@ -492,7 +510,9 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         colorsByCode.Clear();
         fallbackLandColor = unchecked((int)0xFFAC8858);
+        trueColorAirFallbackColor = unchecked((int)0xFF282828);
         loggedColorAccurateFallbacks.Clear();
+        loggedTrueColorBrightSamples.Clear();
         blockColorByBlockId = Array.Empty<int>();
         blockIsLakeByBlockId = Array.Empty<bool>();
         blockIsSnowByBlockId = Array.Empty<bool>();
@@ -1630,6 +1650,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         int[] currentRow = new int[cellsPerAxis];
         int[] lowResolutionPixels = new int[cellsPerAxis * cellsPerAxis];
         bool usePaletteFallback = colorAccurate && config.EnableTerrainSamplerFallbackTrueColor;
+        bool useBrownFallback = config.UseBrownTerrainFallbackPalette;
         bool useTrueColorProbes = false;
         int trueColorProbeStride = Math.Max(1, config.TerrainSamplerFallbackTrueColorProbeStride);
         int trueColorProbeCellsPerAxis = useTrueColorProbes ? (cellsPerAxis + trueColorProbeStride - 1) / trueColorProbeStride : 0;
@@ -1667,7 +1688,15 @@ public sealed class FastPageMapLayer : RGBMapLayer
                     : sampler.GetBlockColumnHeight(worldX - sampleStep, worldZ - sampleStep);
 
                 int color = TerrainSamplerColor(height, westHeight, northHeight, diagonalHeight, seaLevel, landColor, waterColor, waterEdgeColor);
-                if (usePaletteFallback
+                if (useBrownFallback && fallbackPalette.TryGetBrownColor(height, worldX, worldZ, out int brownColor))
+                {
+                    bool flattenBrownColor = height <= seaLevel - 2;
+                    int brownFallbackColor = TrueColorFallbackBrownColor(brownColor, height, seaLevel, worldX, worldZ, flattenBrownColor);
+                    color = flattenBrownColor
+                        ? brownFallbackColor
+                        : TerrainSamplerShadeColor(brownFallbackColor, height, westHeight, northHeight, diagonalHeight, seaLevel);
+                }
+                else if (usePaletteFallback
                     && fallbackPalette.TryGetColor(height, seaLevel, config.TerrainSamplerFallbackSnowStartHeight, worldX, worldZ, out int paletteColor, out bool flattenPaletteColor))
                 {
                     color = flattenPaletteColor
@@ -1864,6 +1893,55 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 : 1f + altitude * 0.75f;
 
         return ColorUtil.ColorMultiply3Clamped(color, shade) | unchecked((int)0xFF000000);
+    }
+
+    private static int TrueColorFallbackBrownColor(int color, int height, int seaLevel, int worldX, int worldZ, bool water)
+    {
+        uint hash = MixFallbackNoise((uint)worldX, (uint)worldZ, (uint)height);
+        float contrast = water ? 1.0f : 1.04f;
+        int noise = water ? 0 : (int)(hash % 7) - 3;
+        int altitude = Math.Clamp(height - seaLevel, -32, 220);
+        int altitudeLift = water ? -14 : (int)MathF.Round(altitude * 0.01f);
+        int adjusted = AdjustFallbackBrownColor(color, contrast, noise + altitudeLift);
+        return water ? adjusted : BlendFallbackBrownColor(adjusted, color, 0.55f);
+    }
+
+    private static int AdjustFallbackBrownColor(int color, float contrast, int brightnessOffset)
+    {
+        int r = AdjustFallbackChannel(color & 0xFF, contrast, brightnessOffset);
+        int g = AdjustFallbackChannel((color >> 8) & 0xFF, contrast, brightnessOffset);
+        int b = AdjustFallbackChannel((color >> 16) & 0xFF, contrast, brightnessOffset);
+        return unchecked((int)0xFF000000) | (b << 16) | (g << 8) | r;
+    }
+
+    private static int AdjustFallbackChannel(int value, float contrast, int brightnessOffset)
+    {
+        return Math.Clamp((int)MathF.Round((value - 128) * contrast + 128 + brightnessOffset), 24, 235);
+    }
+
+    private static int BlendFallbackBrownColor(int color, int sourceColor, float sourceWeight)
+    {
+        int r = BlendFallbackChannel(color & 0xFF, sourceColor & 0xFF, sourceWeight);
+        int g = BlendFallbackChannel((color >> 8) & 0xFF, (sourceColor >> 8) & 0xFF, sourceWeight);
+        int b = BlendFallbackChannel((color >> 16) & 0xFF, (sourceColor >> 16) & 0xFF, sourceWeight);
+        return unchecked((int)0xFF000000) | (b << 16) | (g << 8) | r;
+    }
+
+    private static int BlendFallbackChannel(int value, int sourceValue, float sourceWeight)
+    {
+        return Math.Clamp((int)MathF.Round(value * (1f - sourceWeight) + sourceValue * sourceWeight), 0, 255);
+    }
+
+    private static uint MixFallbackNoise(uint x, uint z, uint height)
+    {
+        uint hash = 2166136261u;
+        hash = (hash ^ x) * 16777619u;
+        hash = (hash ^ z) * 16777619u;
+        hash = (hash ^ height) * 16777619u;
+        hash ^= hash >> 15;
+        hash *= 2246822519u;
+        hash ^= hash >> 13;
+        return hash;
     }
 
     private bool TryBuildPageFromDb(FastVec2i pageKey, out FastMapPageSnapshot snapshot, out bool skippedByIndex)
@@ -3774,6 +3852,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
 
         fallbackLandColor = colorsByCode.TryGetValue("land", out int landColor) ? landColor : unchecked((int)0xFFAC8858);
+        trueColorAirFallbackColor = ParseMapColor(config.TrueColorAirFallbackColor, unchecked((int)0xFF282828));
 
         IList<Block> blocks = api.World.Blocks;
         blockColorByBlockId = new int[blocks.Count];
@@ -3802,6 +3881,23 @@ public sealed class FastPageMapLayer : RGBMapLayer
             }
 
             blockColorByBlockId[i] = color;
+        }
+    }
+
+    private static int ParseMapColor(string? hexColor, int fallback)
+    {
+        if (string.IsNullOrWhiteSpace(hexColor))
+        {
+            return fallback;
+        }
+
+        try
+        {
+            return ColorUtil.ReverseColorBytes(ColorUtil.Hex2Int(hexColor)) | unchecked((int)0xFF000000);
+        }
+        catch
+        {
+            return fallback;
         }
     }
 
@@ -4180,6 +4276,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 if (chunkY >= 0 && chunkY < chunksTmp.Length)
                 {
                     blockId = ReadBlockId(chunksTmp[chunkY], localX, height % ChunkSize, localZ);
+                    if (colorAccurate && config.EnableTrueColorAirSurfaceRepair && IsAir(blockId))
+                    {
+                        TryRepairTrueColorAirSurface(localX, localZ, ref height, ref chunkY, ref blockId);
+                    }
+
                     if (IsSnow(blockId) && !colorAccurate && height > 0)
                     {
                         height--;
@@ -4196,6 +4297,32 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 surfaceBlockIds[index] = blockId;
             }
         }
+    }
+
+    private bool TryRepairTrueColorAirSurface(int localX, int localZ, ref int height, ref int chunkY, ref int blockId)
+    {
+        int minHeight = Math.Max(0, height - config.TrueColorAirSurfaceRepairDepth);
+        for (int sampleY = height - 1; sampleY >= minHeight; sampleY--)
+        {
+            int sampleChunkY = sampleY / ChunkSize;
+            if ((uint)sampleChunkY >= (uint)chunksTmp.Length)
+            {
+                continue;
+            }
+
+            int sampleBlockId = ReadBlockId(chunksTmp[sampleChunkY], localX, sampleY % ChunkSize, localZ);
+            if (IsAir(sampleBlockId))
+            {
+                continue;
+            }
+
+            height = sampleY;
+            chunkY = sampleChunkY;
+            blockId = sampleBlockId;
+            return true;
+        }
+
+        return false;
     }
 
     private void RenderSurfaceTile(
@@ -4333,9 +4460,17 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 }
 
                 long colorStart = profile ? FastMapProfileRecorder.Timestamp() : 0;
-                Block block = api.World.Blocks[blockId];
-                blockPos.Set(ChunkSize * chunkPos.X + localX, height, ChunkSize * chunkPos.Y + localZ);
-                pixels[index] = GetColorAccurateMapColor(block, blockId, blockPos, chunkPos);
+                if (IsAir(blockId))
+                {
+                    pixels[index] = trueColorAirFallbackColor;
+                }
+                else
+                {
+                    Block block = api.World.Blocks[blockId];
+                    blockPos.Set(ChunkSize * chunkPos.X + localX, height, ChunkSize * chunkPos.Y + localZ);
+                    pixels[index] = GetColorAccurateMapColor(block, blockId, blockPos, chunkPos);
+                }
+
                 shadowMap[index] = (byte)Math.Clamp((int)(shadowMap[index] * shade), 0, 255);
                 if (profile)
                 {
@@ -4353,7 +4488,9 @@ public sealed class FastPageMapLayer : RGBMapLayer
             int color = block.GetColor(capi, blockPos);
             int randomColor = block.GetRandomColor(capi, blockPos, BlockFacing.UP, GameMath.MurmurHash3Mod(blockPos.X, blockPos.Y, blockPos.Z, 30));
             randomColor = ((randomColor & 0xFF) << 16) | (((randomColor >> 8) & 0xFF) << 8) | ((randomColor >> 16) & 0xFF);
-            return ColorUtil.ColorOverlay(color, randomColor, colorRandomizationWeight);
+            int finalColor = ColorUtil.ColorOverlay(color, randomColor, colorRandomizationWeight);
+            LogTrueColorBrightSampleIfNeeded(block, blockId, blockPos, color, randomColor, finalColor);
+            return finalColor;
         }
         catch (Exception ex)
         {
@@ -4379,6 +4516,52 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
             return GetMapColor(blockId);
         }
+    }
+
+    private void LogTrueColorBrightSampleIfNeeded(Block block, int blockId, BlockPos blockPos, int baseColor, int randomColor, int finalColor)
+    {
+        if (!config.LogTrueColorBrightSamples || IsLake(blockId) || !IsNearWhite(finalColor))
+        {
+            return;
+        }
+
+        string blockCode = block.Code?.ToShortString() ?? blockId.ToString();
+        if (!loggedTrueColorBrightSamples.TryAdd(blockCode, 0))
+        {
+            return;
+        }
+
+        api.Logger.Notification(
+            "[FastMap] Bright true-colour sample block={0}, material={1}, pos={2}/{3}/{4}, base={5}, random={6}, final={7}, textureSubId={8}, climateMap={9}, seasonMap={10}, shapeUsesColormap={11}",
+            blockCode,
+            block.BlockMaterial,
+            blockPos.X,
+            blockPos.Y,
+            blockPos.Z,
+            FormatColor(baseColor),
+            FormatColor(randomColor),
+            FormatColor(finalColor),
+            block.TextureSubIdForBlockColor,
+            block.ClimateColorMapResolved != null,
+            block.SeasonColorMapResolved != null,
+            block.ShapeUsesColormap);
+    }
+
+    private static bool IsNearWhite(int color)
+    {
+        int r = color & 0xFF;
+        int g = (color >> 8) & 0xFF;
+        int b = (color >> 16) & 0xFF;
+        return r >= 245 && g >= 245 && b >= 245;
+    }
+
+    private static string FormatColor(int color)
+    {
+        int r = color & 0xFF;
+        int g = (color >> 8) & 0xFF;
+        int b = (color >> 16) & 0xFF;
+        int a = (color >> 24) & 0xFF;
+        return $"#{r:X2}{g:X2}{b:X2}{a:X2}";
     }
 
     private static float CalculateShade(IMapChunk center, IMapChunk northwest, IMapChunk west, IMapChunk north, int localX, int localZ, int height, int index)
@@ -4571,6 +4754,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private bool IsSnow(int blockId)
     {
         return blockId >= 0 && blockId < blockIsSnowByBlockId.Length && blockIsSnowByBlockId[blockId];
+    }
+
+    private static bool IsAir(int blockId)
+    {
+        return blockId <= 0;
     }
 
     private static FastVec2i PageKey(FastVec2i chunkCoord)
