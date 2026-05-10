@@ -264,14 +264,16 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private string NormalFallbackCacheVariant()
     {
-        string palette = config.UseBrownTerrainFallbackPalette ? "brown" : "vanilla";
-        return "normal-" + palette + "-v12-h" + config.TerrainSamplerFallbackSnowStartHeight;
+        return config.UseBrownTerrainFallbackPalette
+            ? "brown-v1"
+            : "normal-vanilla-v1";
     }
 
     private string TrueColorFallbackCacheVariant()
     {
-        string palette = config.UseBrownTerrainFallbackPalette ? "brown" : "palette";
-        return "truecolour-" + palette + "-v11-h" + config.TerrainSamplerFallbackSnowStartHeight;
+        return config.UseBrownTerrainFallbackPalette
+            ? "brown-v1"
+            : "truecolour-palette-v1";
     }
 
     public override void OnLoaded()

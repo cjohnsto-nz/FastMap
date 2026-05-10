@@ -151,7 +151,7 @@ public abstract class FastMapTerrainSamplerOverlayLayer : MapLayer
             api.World.SavegameIdentifier,
             SampleStep,
             FastMapModSystem.Instance?.Config.UseHighCompressionCache ?? false,
-            $"terrain-overlay-{LayerCodeForCache()}-v3");
+            $"terrain-overlay-{LayerCodeForCache()}-v1");
         ZIndex = 2;
     }
 
