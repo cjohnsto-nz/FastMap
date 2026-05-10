@@ -201,7 +201,7 @@ internal sealed class FastMapFallbackPalette
 
         uint hash = Mix((uint)worldX, (uint)worldZ, (uint)height);
         float valueNoise = ((hash >> 16) & 0xFF) / 255f - 0.5f;
-        float multiplier = 1f + valueNoise * 0.18f * waterNoiseStrength;
+        float multiplier = Math.Clamp(1f + valueNoise * 2f * waterNoiseStrength, 0f, 2f);
         int r = Math.Clamp((int)MathF.Round((color & 0xFF) * multiplier), 0, 255);
         int g = Math.Clamp((int)MathF.Round(((color >> 8) & 0xFF) * multiplier), 0, 255);
         int b = Math.Clamp((int)MathF.Round(((color >> 16) & 0xFF) * multiplier), 0, 255);
