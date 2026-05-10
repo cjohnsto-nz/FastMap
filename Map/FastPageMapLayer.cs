@@ -1755,7 +1755,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 {
                     bool flattenBrownColor = height <= seaLevel - 2;
                     int brownFallbackColor = TrueColorFallbackBrownColor(brownColor, height, seaLevel, worldX, worldZ, flattenBrownColor);
-                    brownFallbackColor = TerrainSamplerBrownClimateTintColor(brownFallbackColor, terrainSample, flattenBrownColor);
+                    brownFallbackColor = TerrainSamplerBrownClimateTintColor(brownFallbackColor, terrainSample, flattenBrownColor, seaLevel);
                     color = flattenBrownColor
                         ? brownFallbackColor
                         : TerrainSamplerShadeColor(brownFallbackColor, height, westHeight, northHeight, diagonalHeight, seaLevel);
@@ -1769,7 +1769,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
                     if (!flattenPaletteColor && height < config.TerrainSamplerFallbackSnowStartHeight)
                     {
-                        paletteColor = TerrainSamplerClimateTintColor(paletteColor, terrainSample, water: false, worldX, worldZ);
+                        paletteColor = TerrainSamplerClimateTintColor(paletteColor, terrainSample, water: false, worldX, worldZ, seaLevel);
                     }
 
                     color = flattenPaletteColor
@@ -1778,7 +1778,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 }
                 else
                 {
-                    int climateLandColor = TerrainSamplerClimateTintColor(landColor, terrainSample, water: false, worldX, worldZ);
+                    int climateLandColor = TerrainSamplerClimateTintColor(landColor, terrainSample, water: false, worldX, worldZ, seaLevel);
                     color = TerrainSamplerColor(height, westHeight, northHeight, diagonalHeight, seaLevel, climateLandColor, waterColor, waterEdgeColor);
                     color = TerrainSamplerColdSnowTintColor(color, terrainSample, height, westHeight, northHeight, diagonalHeight, seaLevel, worldX, worldZ);
                 }
@@ -1985,7 +1985,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         return water ? adjusted : BlendFallbackBrownColor(adjusted, color, 0.55f);
     }
 
-    private static int TerrainSamplerBrownClimateTintColor(int color, FastMapTerrainSamplerColumn sample, bool water)
+    private int TerrainSamplerBrownClimateTintColor(int color, FastMapTerrainSamplerColumn sample, bool water, int seaLevel)
     {
         if (water || !sample.HasClimate)
         {
@@ -1994,7 +1994,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         float rainfall = Math.Clamp(sample.Rainfall, 0f, 1f);
         float temperature = Math.Clamp(sample.Temperature, 0f, 1f);
-        float vegetation = Math.Max(sample.ForestDensity, sample.ShrubDensity * 0.65f);
+        GetTerrainSamplerVegetationWeights(sample, seaLevel, out float forest, out float shrub);
+        float vegetation = Math.Max(forest, shrub * 0.65f);
         float aridity = Math.Clamp(temperature * (1f - rainfall), 0f, 1f);
 
         // Brown fallback should stay close to map-bkg.png; avoid vegetation hue shifts.
@@ -2002,7 +2003,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         return AdjustFallbackBrownColor(color, 1.0f, valueShift);
     }
 
-    private static int TerrainSamplerClimateTintColor(int color, FastMapTerrainSamplerColumn sample, bool water, int worldX, int worldZ)
+    private int TerrainSamplerClimateTintColor(int color, FastMapTerrainSamplerColumn sample, bool water, int worldX, int worldZ, int seaLevel)
     {
         if (water || !sample.HasClimate)
         {
@@ -2013,8 +2014,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         float temperature = Math.Clamp(sample.Temperature, 0f, 1f);
         float dryness = 1f - rainfall;
         float cold = 0.5f - temperature;
-        float forest = Math.Clamp(sample.ForestDensity, 0f, 1f);
-        float shrub = Math.Clamp(sample.ShrubDensity, 0f, 1f);
+        GetTerrainSamplerVegetationWeights(sample, seaLevel, out float forest, out float shrub);
         float vegetation = Math.Max(forest, shrub * 0.45f);
         float aridity = Math.Clamp(temperature * dryness, 0f, 1f);
         float aridWeight = Math.Clamp((aridity - 0.28f) / 0.55f, 0f, 0.85f) * (1f - vegetation * 0.85f);
@@ -2040,6 +2040,66 @@ public sealed class FastPageMapLayer : RGBMapLayer
         int g = Math.Clamp(((tinted >> 8) & 0xFF) + greenShift + valueShift, 0, 255);
         int b = Math.Clamp(((tinted >> 16) & 0xFF) + blueShift + valueShift, 0, 255);
         return unchecked((int)0xFF000000) | (b << 16) | (g << 8) | r;
+    }
+
+    private void GetTerrainSamplerVegetationWeights(FastMapTerrainSamplerColumn sample, int seaLevel, out float forest, out float shrub)
+    {
+        float rawForest = Math.Clamp(sample.ForestDensity, 0f, 1f);
+        float rawShrub = Math.Clamp(sample.ShrubDensity, 0f, 1f);
+        if (!sample.HasClimate || rawForest <= 0f && rawShrub <= 0f)
+        {
+            forest = rawForest;
+            shrub = rawShrub;
+            return;
+        }
+
+        int unscaledRain = (sample.ClimateColor >> 8) & 0xFF;
+        if (unscaledRain == 0)
+        {
+            unscaledRain = Math.Clamp((int)MathF.Round(sample.Rainfall * 255f), 0, 255);
+        }
+
+        float adjustedRain = Climate.GetRainFall(unscaledRain, sample.Height) / 255f;
+        float adjustedTemp = TerrainSamplerTemperatureCelsius(sample, sample.Height, seaLevel);
+        float relativeHeight = TerrainSamplerRelativeHeight(sample.Height, seaLevel);
+        int fertility = Climate.GetFertility(
+            Math.Clamp((int)MathF.Round(adjustedRain * 255f), 0, 255),
+            adjustedTemp,
+            relativeHeight);
+        float fertilityRel = fertility / 255f;
+
+        // Vanilla still uses forest/shrub maps as density gates, but tree choice is climate-scored.
+        // This broad suitability curve keeps the tint closer to where actual vegetation can appear.
+        float forestClimate = SmoothStep(0.22f, 0.48f, adjustedRain)
+            * SmoothStep(-8f, 4f, adjustedTemp)
+            * (1f - SmoothStep(34f, 42f, adjustedTemp))
+            * SmoothStep(0.12f, 0.36f, fertilityRel)
+            * (1f - SmoothStep(0.72f, 0.96f, relativeHeight));
+        float shrubClimate = SmoothStep(0.10f, 0.32f, adjustedRain)
+            * SmoothStep(-14f, -2f, adjustedTemp)
+            * (1f - SmoothStep(38f, 46f, adjustedTemp))
+            * SmoothStep(0.08f, 0.26f, fertilityRel)
+            * (1f - SmoothStep(0.78f, 1.0f, relativeHeight));
+
+        forest = rawForest * Math.Clamp(0.08f + forestClimate * 0.92f, 0f, 1f);
+        shrub = rawShrub * Math.Clamp(0.12f + shrubClimate * 0.88f, 0f, 1f);
+    }
+
+    private float TerrainSamplerRelativeHeight(int height, int seaLevel)
+    {
+        int mapHeight = Math.Max(seaLevel + 1, capi.World.BlockAccessor.MapSizeY);
+        return Math.Clamp((height - seaLevel) / (float)(mapHeight - seaLevel), 0f, 1f);
+    }
+
+    private static float SmoothStep(float edge0, float edge1, float value)
+    {
+        if (Math.Abs(edge1 - edge0) < 0.0001f)
+        {
+            return value >= edge1 ? 1f : 0f;
+        }
+
+        float t = Math.Clamp((value - edge0) / (edge1 - edge0), 0f, 1f);
+        return t * t * (3f - 2f * t);
     }
 
     private int TerrainSamplerColdSnowTintColor(
