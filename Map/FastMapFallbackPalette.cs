@@ -19,14 +19,14 @@ internal sealed class FastMapFallbackPalette
     private readonly int[] trees;
     private readonly int[] water;
     private readonly int waterBaseColor;
-    private readonly int waterAlbedoColor;
-    private readonly float waterClimateInputStrength;
-    private readonly float waterClimateStrength;
+    private readonly int waterRainfallColor;
+    private readonly float waterRainfallStrength;
+    private readonly int waterTemperatureColor;
+    private readonly float waterTemperatureStrength;
     private readonly float waterNoiseStrength;
     private readonly int[] snow;
     private readonly int[] brown;
     private readonly ClimateTintMap? climatePlantTint;
-    private readonly ClimateTintMap? climateWaterTint;
     private readonly SeasonalTintMap? seasonalGrassTint;
 
     private FastMapFallbackPalette(
@@ -36,14 +36,14 @@ internal sealed class FastMapFallbackPalette
         int[] trees,
         int[] water,
         int waterBaseColor,
-        int waterAlbedoColor,
-        float waterClimateInputStrength,
-        float waterClimateStrength,
+        int waterRainfallColor,
+        float waterRainfallStrength,
+        int waterTemperatureColor,
+        float waterTemperatureStrength,
         float waterNoiseStrength,
         int[] snow,
         int[] brown,
         ClimateTintMap? climatePlantTint,
-        ClimateTintMap? climateWaterTint,
         SeasonalTintMap? seasonalGrassTint)
     {
         this.grass = grass;
@@ -52,14 +52,14 @@ internal sealed class FastMapFallbackPalette
         this.trees = trees;
         this.water = water;
         this.waterBaseColor = waterBaseColor;
-        this.waterAlbedoColor = waterAlbedoColor;
-        this.waterClimateInputStrength = Math.Clamp(waterClimateInputStrength, 0f, 2f);
-        this.waterClimateStrength = Math.Clamp(waterClimateStrength, 0f, 2f);
+        this.waterRainfallColor = waterRainfallColor;
+        this.waterRainfallStrength = Math.Clamp(waterRainfallStrength, 0f, 2f);
+        this.waterTemperatureColor = waterTemperatureColor;
+        this.waterTemperatureStrength = Math.Clamp(waterTemperatureStrength, 0f, 2f);
         this.waterNoiseStrength = Math.Clamp(waterNoiseStrength, 0f, 1f);
         this.snow = snow;
         this.brown = brown;
         this.climatePlantTint = climatePlantTint;
-        this.climateWaterTint = climateWaterTint;
         this.seasonalGrassTint = seasonalGrassTint;
     }
 
@@ -72,7 +72,6 @@ internal sealed class FastMapFallbackPalette
     public bool HasBrown => brown.Length > 0;
     public bool HasAny => HasGrass || HasWater || HasSnow;
     public bool HasClimatePlantTint => climatePlantTint != null;
-    public bool HasClimateWaterTint => climateWaterTint != null;
     public bool HasSeasonalGrassTint => seasonalGrassTint != null;
 
     public static FastMapFallbackPalette Load(ICoreAPI api, FastMapConfig config)
@@ -96,16 +95,16 @@ internal sealed class FastMapFallbackPalette
             waterSource = "water.png";
         }
 
-        int waterBaseColor = ParseMapColor(config.TerrainSamplerFallbackWaterBaseColor, unchecked((int)0xFF323D10)); // #103d32 in Vintage Story's 0xAABBGGRR map color order.
-        int waterAlbedoColor = AverageColor(water, unchecked((int)0xFF898989));
+        int waterBaseColor = ParseMapColor(config.TerrainSamplerFallbackWaterBaseColor, unchecked((int)0xFF482D01)); // #012d48 in Vintage Story's 0xAABBGGRR map color order.
+        int waterRainfallColor = ParseMapColor(config.TerrainSamplerFallbackWaterRainfallColor, unchecked((int)0xFFDFC782)); // #82c7df in Vintage Story's 0xAABBGGRR map color order.
+        int waterTemperatureColor = ParseMapColor(config.TerrainSamplerFallbackWaterTemperatureColor, unchecked((int)0xFF4F89B8)); // #b8894f in Vintage Story's 0xAABBGGRR map color order.
         int[] snow = LoadPalette(api, assemblyDirectory, "snow.png");
         int[] brown = LoadPalette(api, assemblyDirectory, "map-bkg.png", warnIfMissing: false);
         ClimateTintMap? climatePlantTint = LoadClimateTintMap(api, "environment/planttint", padding: 4);
-        ClimateTintMap? climateWaterTint = LoadClimateTintMap(api, "environment/watertint", padding: 4);
         SeasonalTintMap? seasonalGrassTint = LoadSeasonalTintMap(api, "environment/seasons/grasstint");
 
         api.Logger.Notification(
-            "[FastMap] Terrain fallback palettes loaded: grass={0} ({1}), dryGrass={2}, lushGrass={3}, trees={4}, water={5} ({6}), waterBase={7}, waterClimateInput={8:0.##}, waterClimate={9:0.##}, waterNoise={10:0.##}, snow={11}, brown={12}, climatePlant={13}, climateWater={14}, seasonalGrass={15}, path={16}",
+            "[FastMap] Terrain fallback palettes loaded: grass={0} ({1}), dryGrass={2}, lushGrass={3}, trees={4}, water={5} ({6}), waterBase={7}, waterRainfall={8}x{9:0.##}, waterTemperature={10}x{11:0.##}, waterNoise={12:0.##}, snow={13}, brown={14}, climatePlant={15}, seasonalGrass={16}, path={17}",
             grass.Length,
             grassSource,
             dryGrass.Length,
@@ -114,13 +113,14 @@ internal sealed class FastMapFallbackPalette
             water.Length,
             waterSource,
             config.TerrainSamplerFallbackWaterBaseColor,
-            config.TerrainSamplerFallbackWaterClimateInputStrength,
-            config.TerrainSamplerFallbackWaterClimateStrength,
+            config.TerrainSamplerFallbackWaterRainfallColor,
+            config.TerrainSamplerFallbackWaterRainfallStrength,
+            config.TerrainSamplerFallbackWaterTemperatureColor,
+            config.TerrainSamplerFallbackWaterTemperatureStrength,
             config.TerrainSamplerFallbackWaterNoiseStrength,
             snow.Length,
             brown.Length,
             climatePlantTint != null ? climatePlantTint.Width + "x" + climatePlantTint.Height : "missing",
-            climateWaterTint != null ? climateWaterTint.Width + "x" + climateWaterTint.Height : "missing",
             seasonalGrassTint != null ? seasonalGrassTint.Width + "x" + seasonalGrassTint.Height : "missing",
             assemblyDirectory);
 
@@ -131,14 +131,14 @@ internal sealed class FastMapFallbackPalette
             trees,
             water,
             waterBaseColor,
-            waterAlbedoColor,
-            config.TerrainSamplerFallbackWaterClimateInputStrength,
-            config.TerrainSamplerFallbackWaterClimateStrength,
+            waterRainfallColor,
+            config.TerrainSamplerFallbackWaterRainfallStrength,
+            waterTemperatureColor,
+            config.TerrainSamplerFallbackWaterTemperatureStrength,
             config.TerrainSamplerFallbackWaterNoiseStrength,
             snow,
             brown,
             climatePlantTint,
-            climateWaterTint,
             seasonalGrassTint);
     }
 
@@ -178,55 +178,34 @@ internal sealed class FastMapFallbackPalette
         return true;
     }
 
-    public int ClimateTintWaterColor(int randomTextureColor, int rain, int adjustedTemperature, float randomizationWeight, int worldX, int worldZ, int height)
+    public int TerrainSamplerWaterColor(int rain, int adjustedTemperature, bool hasClimate, int worldX, int worldZ, int height)
     {
-        int baseColor = waterBaseColor;
-        int softenedRain = SoftenClimateByte(rain, waterClimateInputStrength);
-        int softenedTemperature = SoftenClimateByte(adjustedTemperature, waterClimateInputStrength);
-        if (!TryGetClimateWaterTintAdjusted(softenedRain, softenedTemperature, out int climateTint))
+        if (!hasClimate)
         {
-            return ApplyWaterNoise(baseColor, randomTextureColor, worldX, worldZ, height, randomizationWeight);
+            return ApplyWaterValueNoise(waterBaseColor, worldX, worldZ, height);
         }
 
-        int climateColor = ApplyWaterClimateDelta(baseColor, climateTint, waterClimateStrength);
-        return ApplyWaterNoise(climateColor, randomTextureColor, worldX, worldZ, height, randomizationWeight);
+        float rainfallWeight = (1f - Math.Clamp(rain, 0, 255) / 255f) * waterRainfallStrength;
+        float temperatureWeight = (Math.Clamp(adjustedTemperature, 0, 255) / 255f) * waterTemperatureStrength;
+        int color = BlendColor(waterBaseColor, waterRainfallColor, Math.Clamp(rainfallWeight, 0f, 1f));
+        color = BlendColor(color, waterTemperatureColor, Math.Clamp(temperatureWeight, 0f, 1f));
+        return ApplyWaterValueNoise(color, worldX, worldZ, height);
     }
 
-    private static int SoftenClimateByte(int value, float weight)
+    private int ApplyWaterValueNoise(int color, int worldX, int worldZ, int height)
     {
-        return Math.Clamp((int)MathF.Round(128 + (Math.Clamp(value, 0, 255) - 128) * weight), 0, 255);
-    }
+        if (waterNoiseStrength <= 0f)
+        {
+            return color;
+        }
 
-    private int ApplyWaterClimateDelta(int baseColor, int climateTint, float weight)
-    {
-        int neutralTint = TryGetClimateWaterTintAdjusted(128, 128, out int color)
-            ? color
-            : unchecked((int)0xFFFFFFFF);
-        int neutralVanilla = ColorMultiplyEach(waterAlbedoColor, neutralTint);
-        int tintedVanilla = ColorMultiplyEach(waterAlbedoColor, climateTint);
-
-        int r = ApplyDeltaChannel(baseColor & 0xFF, tintedVanilla & 0xFF, neutralVanilla & 0xFF, weight);
-        int g = ApplyDeltaChannel((baseColor >> 8) & 0xFF, (tintedVanilla >> 8) & 0xFF, (neutralVanilla >> 8) & 0xFF, weight);
-        int b = ApplyDeltaChannel((baseColor >> 16) & 0xFF, (tintedVanilla >> 16) & 0xFF, (neutralVanilla >> 16) & 0xFF, weight);
-        return unchecked((int)0xFF000000) | (b << 16) | (g << 8) | r;
-    }
-
-    private static int ApplyDeltaChannel(int baseValue, int tintedVanilla, int neutralVanilla, float weight)
-    {
-        return Math.Clamp((int)MathF.Round(baseValue + (tintedVanilla - neutralVanilla) * weight), 0, 255);
-    }
-
-    private int ApplyWaterNoise(int color, int randomTextureColor, int worldX, int worldZ, int height, float randomizationWeight)
-    {
-        int textureValue = Math.Max(randomTextureColor & 0xFF, Math.Max((randomTextureColor >> 8) & 0xFF, (randomTextureColor >> 16) & 0xFF));
-        int albedoValue = Math.Max(waterAlbedoColor & 0xFF, Math.Max((waterAlbedoColor >> 8) & 0xFF, (waterAlbedoColor >> 16) & 0xFF));
-        float textureRatio = albedoValue > 0
-            ? Math.Clamp(textureValue / (float)albedoValue, 0.75f, 1.25f)
-            : 1f;
         uint hash = Mix((uint)worldX, (uint)worldZ, (uint)height);
         float valueNoise = ((hash >> 16) & 0xFF) / 255f - 0.5f;
-        float noiseStrength = Math.Clamp(randomizationWeight, 0f, 1f) * waterNoiseStrength;
-        return MultiplyValue(color, 1f + ((textureRatio - 1f) * 0.35f + valueNoise) * noiseStrength);
+        float multiplier = 1f + valueNoise * 0.18f * waterNoiseStrength;
+        int r = Math.Clamp((int)MathF.Round((color & 0xFF) * multiplier), 0, 255);
+        int g = Math.Clamp((int)MathF.Round(((color >> 8) & 0xFF) * multiplier), 0, 255);
+        int b = Math.Clamp((int)MathF.Round(((color >> 16) & 0xFF) * multiplier), 0, 255);
+        return unchecked((int)0xFF000000) | (b << 16) | (g << 8) | r;
     }
 
     private static int ParseMapColor(string? value, int fallback)
@@ -251,22 +230,6 @@ internal sealed class FastMapFallbackPalette
         }
 
         return fallback;
-    }
-
-    private static int ColorMultiplyEach(int color, int tint)
-    {
-        int r = ((color & 0xFF) * (tint & 0xFF)) / 255;
-        int g = (((color >> 8) & 0xFF) * ((tint >> 8) & 0xFF)) / 255;
-        int b = (((color >> 16) & 0xFF) * ((tint >> 16) & 0xFF)) / 255;
-        return unchecked((int)0xFF000000) | (b << 16) | (g << 8) | r;
-    }
-
-    private static int MultiplyValue(int color, float multiplier)
-    {
-        int r = Math.Clamp((int)MathF.Round((color & 0xFF) * multiplier), 0, 255);
-        int g = Math.Clamp((int)MathF.Round(((color >> 8) & 0xFF) * multiplier), 0, 255);
-        int b = Math.Clamp((int)MathF.Round(((color >> 16) & 0xFF) * multiplier), 0, 255);
-        return unchecked((int)0xFF000000) | (b << 16) | (g << 8) | r;
     }
 
     private int BlendGrassSpectrumColor(int color, uint hash, float dryWeight, float lushWeight)
@@ -384,18 +347,6 @@ internal sealed class FastMapFallbackPalette
         return true;
     }
 
-    public bool TryGetClimateWaterTintAdjusted(int rain, int adjustedTemperature, out int color)
-    {
-        if (climateWaterTint == null)
-        {
-            color = 0;
-            return false;
-        }
-
-        color = climateWaterTint.SampleAdjustedNearest(rain, adjustedTemperature);
-        return true;
-    }
-
     private static int[] LoadPalette(ICoreAPI api, string directory, string filename, bool warnIfMissing = true)
     {
         string path = Path.Combine(directory, filename);
@@ -468,31 +419,6 @@ internal sealed class FastMapFallbackPalette
         }
 
         return colors.ToArray();
-    }
-
-    private static int AverageColor(int[] colors, int fallback)
-    {
-        if (colors.Length == 0)
-        {
-            return fallback;
-        }
-
-        long r = 0;
-        long g = 0;
-        long b = 0;
-        for (int i = 0; i < colors.Length; i++)
-        {
-            int color = colors[i];
-            r += color & 0xFF;
-            g += (color >> 8) & 0xFF;
-            b += (color >> 16) & 0xFF;
-        }
-
-        int count = colors.Length;
-        return unchecked((int)0xFF000000)
-            | (((int)MathF.Round(b / (float)count) & 0xFF) << 16)
-            | (((int)MathF.Round(g / (float)count) & 0xFF) << 8)
-            | ((int)MathF.Round(r / (float)count) & 0xFF);
     }
 
     private static ClimateTintMap? LoadClimateTintMap(ICoreAPI api, string path, int padding)

@@ -22,11 +22,12 @@ public sealed class FastMapConfig
     public int TerrainSamplerFallbackTrueColorProbeStride { get; set; } = 4;
     public int TerrainSamplerFallbackSnowStartHeight { get; set; } = 250;
     public int TerrainSamplerFallbackSeasonUploadBucketsPerYear { get; set; } = 12;
-    public string TerrainSamplerFallbackWaterBaseColor { get; set; } = "#0d3f37";
-    public float TerrainSamplerFallbackWaterClimateInputStrength { get; set; } = 1.0f;
-    public float TerrainSamplerFallbackWaterClimateStrength { get; set; } = 0.2f;
+    public string TerrainSamplerFallbackWaterBaseColor { get; set; } = "#002e30";
+    public string TerrainSamplerFallbackWaterRainfallColor { get; set; } = "#19c4ea";
+    public float TerrainSamplerFallbackWaterRainfallStrength { get; set; } = 0.05f;
+    public string TerrainSamplerFallbackWaterTemperatureColor { get; set; } = "#f0dd0b";
+    public float TerrainSamplerFallbackWaterTemperatureStrength { get; set; } = 0.1f;
     public float TerrainSamplerFallbackWaterNoiseStrength { get; set; } = 0.1f;
-    public float TerrainSamplerFallbackWaterHeightShadeStrength { get; set; } = 0.5f;
     public bool UseBrownTerrainFallbackPalette { get; set; } = false;
     public bool EnableTrueColorAirSurfaceRepair { get; set; } = true;
     public int TrueColorAirSurfaceRepairDepth { get; set; } = 32;
@@ -60,8 +61,8 @@ public sealed class FastMapConfig
     public bool LogStats { get; set; } = false;
     public float LogStatsIntervalSeconds { get; set; } = 5.0f;
     public bool LogTrueColorBrightSamples { get; set; } = false;
-    public bool EnableTerrainSamplerRainfallLayer { get; set; } = false;
-    public bool EnableTerrainSamplerTemperatureLayer { get; set; } = false;
+    public bool EnableTerrainSamplerRainfallLayer { get; set; } = true;
+    public bool EnableTerrainSamplerTemperatureLayer { get; set; } = true;
     public bool EnableTerrainSamplerForestDensityLayer { get; set; } = false;
     public bool EnableTerrainSamplerShrubDensityLayer { get; set; } = false;
     public bool EnableHitchDiagnostics { get; set; } = false;
@@ -101,12 +102,17 @@ public sealed class FastMapConfig
         TerrainSamplerFallbackSnowStartHeight = Math.Clamp(TerrainSamplerFallbackSnowStartHeight, 1, 100000);
         TerrainSamplerFallbackSeasonUploadBucketsPerYear = Math.Clamp(TerrainSamplerFallbackSeasonUploadBucketsPerYear, 1, 128);
         TerrainSamplerFallbackWaterBaseColor = string.IsNullOrWhiteSpace(TerrainSamplerFallbackWaterBaseColor)
-            ? "#103d32"
+            ? "#012d48"
             : TerrainSamplerFallbackWaterBaseColor.Trim();
-        TerrainSamplerFallbackWaterClimateInputStrength = Math.Clamp(TerrainSamplerFallbackWaterClimateInputStrength, 0f, 2f);
-        TerrainSamplerFallbackWaterClimateStrength = Math.Clamp(TerrainSamplerFallbackWaterClimateStrength, 0f, 2f);
+        TerrainSamplerFallbackWaterRainfallColor = string.IsNullOrWhiteSpace(TerrainSamplerFallbackWaterRainfallColor)
+            ? "#82c7df"
+            : TerrainSamplerFallbackWaterRainfallColor.Trim();
+        TerrainSamplerFallbackWaterRainfallStrength = Math.Clamp(TerrainSamplerFallbackWaterRainfallStrength, 0f, 2f);
+        TerrainSamplerFallbackWaterTemperatureColor = string.IsNullOrWhiteSpace(TerrainSamplerFallbackWaterTemperatureColor)
+            ? "#b8894f"
+            : TerrainSamplerFallbackWaterTemperatureColor.Trim();
+        TerrainSamplerFallbackWaterTemperatureStrength = Math.Clamp(TerrainSamplerFallbackWaterTemperatureStrength, 0f, 2f);
         TerrainSamplerFallbackWaterNoiseStrength = Math.Clamp(TerrainSamplerFallbackWaterNoiseStrength, 0f, 1f);
-        TerrainSamplerFallbackWaterHeightShadeStrength = Math.Clamp(TerrainSamplerFallbackWaterHeightShadeStrength, 0f, 2f);
         TrueColorAirSurfaceRepairDepth = Math.Clamp(TrueColorAirSurfaceRepairDepth, 1, 64);
         TerrainSamplerFallbackMaxPagesPerSession = Math.Clamp(TerrainSamplerFallbackMaxPagesPerSession, 0, 100000);
         TerrainSamplerFallbackRadiusChunks = Math.Clamp(TerrainSamplerFallbackRadiusChunks, 0, 8192);

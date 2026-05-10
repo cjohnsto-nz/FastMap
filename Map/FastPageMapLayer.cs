@@ -1732,8 +1732,6 @@ public sealed class FastPageMapLayer : RGBMapLayer
             return false;
         }
 
-        long waterDepthSum = 0;
-        int waterDepthSamples = 0;
         for (int cellZ = 0; cellZ < cellsPerAxis; cellZ++)
         {
             if (disposed)
@@ -1766,17 +1764,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
                     nearSeaSamples++;
                 }
 
-                if (height <= seaLevel - 2)
-                {
-                    waterDepthSum += seaLevel - height;
-                    waterDepthSamples++;
-                }
             }
         }
-
-        float averageWaterDepth = waterDepthSamples > 0
-            ? waterDepthSum / (float)waterDepthSamples
-            : 0f;
 
         for (int cellZ = 0; cellZ < cellsPerAxis; cellZ++)
         {
@@ -1839,29 +1828,21 @@ public sealed class FastPageMapLayer : RGBMapLayer
                     }
                     else
                     {
-                        if (flattenPaletteColor && terrainSample.HasClimate)
+                        if (flattenPaletteColor)
                         {
-                            int adjustedTemperature = Climate.GetAdjustedTemperature(
-                                TerrainSamplerUnscaledTemperature(terrainSample),
-                                height - seaLevel);
-                            paletteColor = fallbackPalette.ClimateTintWaterColor(
-                                paletteColor,
-                                TerrainSamplerUnscaledRainfall(terrainSample),
+                            int adjustedTemperature = terrainSample.HasClimate
+                                ? Climate.GetAdjustedTemperature(TerrainSamplerUnscaledTemperature(terrainSample), height - seaLevel)
+                                : 0;
+                            int rainfall = terrainSample.HasClimate
+                                ? Climate.GetRainFall(TerrainSamplerUnscaledRainfall(terrainSample), height)
+                                : 0;
+                            paletteColor = fallbackPalette.TerrainSamplerWaterColor(
+                                rainfall,
                                 adjustedTemperature,
-                                colorRandomizationWeight,
+                                terrainSample.HasClimate,
                                 worldX,
                                 worldZ,
                                 height);
-                        }
-
-                        if (flattenPaletteColor)
-                        {
-                            paletteColor = TerrainSamplerShadeWaterColor(
-                                paletteColor,
-                                height,
-                                seaLevel,
-                                averageWaterDepth,
-                                config.TerrainSamplerFallbackWaterHeightShadeStrength);
                         }
 
                         color = flattenPaletteColor
@@ -2068,15 +2049,6 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 ? 0.96f - relief * 0.35f + altitude * 0.5f
                 : 1f + altitude * 0.75f;
 
-        return ColorUtil.ColorMultiply3Clamped(color, shade) | unchecked((int)0xFF000000);
-    }
-
-    private static int TerrainSamplerShadeWaterColor(int color, int height, int seaLevel, float averageWaterDepth, float strength)
-    {
-        float localDepth = Math.Max(0f, seaLevel - height);
-        float softDepth = averageWaterDepth * 0.9f + localDepth * 0.1f;
-        float depthSignal = Math.Clamp((16f - softDepth) / 160f, -0.08f, 0.08f);
-        float shade = Math.Clamp(1f + depthSignal * Math.Clamp(strength, 0f, 2f), 0.84f, 1.16f);
         return ColorUtil.ColorMultiply3Clamped(color, shade) | unchecked((int)0xFF000000);
     }
 

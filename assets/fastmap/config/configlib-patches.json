@@ -209,18 +209,26 @@
     {
       "code": "TerrainSamplerFallbackWaterBaseColor",
       "type": "text",
-      "default": "#103d32",
+      "default": "#012d48",
       "clientSide": true,
       "ingui": "Fallback water base colour",
-      "comment": "Base #RRGGBB colour used for synthetic Pregen water before climate tint, value noise, and height shading are applied."
+      "comment": "Base #RRGGBB colour used for synthetic Pregen water before rainfall, temperature, and value-noise overlays are applied."
     },
     {
-      "code": "TerrainSamplerFallbackWaterClimateInputStrength",
+      "code": "TerrainSamplerFallbackWaterRainfallColor",
+      "type": "text",
+      "default": "#82c7df",
+      "clientSide": true,
+      "ingui": "Fallback water rainfall colour",
+      "comment": "Light-blue #RRGGBB overlay applied inversely by rainfall. 0% rainfall applies this at full alpha before strength scaling."
+    },
+    {
+      "code": "TerrainSamplerFallbackWaterRainfallStrength",
       "type": "float",
       "default": 1.0,
       "clientSide": true,
-      "ingui": "Fallback water climate input",
-      "comment": "How strongly rainfall and adjusted temperature move away from neutral before sampling Vintage Story's water tint map. 0 ignores climate position; 1 uses the raw sampled climate; 2 exaggerates it.",
+      "ingui": "Fallback water rainfall strength",
+      "comment": "Strength of the inverse-rainfall blue overlay. 0 disables it; 1 uses the configured colour at its calculated alpha; 2 exaggerates it before clamping.",
       "range": {
         "min": 0.0,
         "max": 2.0,
@@ -228,12 +236,20 @@
       }
     },
     {
-      "code": "TerrainSamplerFallbackWaterClimateStrength",
+      "code": "TerrainSamplerFallbackWaterTemperatureColor",
+      "type": "text",
+      "default": "#b8894f",
+      "clientSide": true,
+      "ingui": "Fallback water temperature colour",
+      "comment": "Warm #RRGGBB overlay applied by adjusted temperature. 0% temperature applies no warmth."
+    },
+    {
+      "code": "TerrainSamplerFallbackWaterTemperatureStrength",
       "type": "float",
       "default": 1.0,
       "clientSide": true,
-      "ingui": "Fallback water climate strength",
-      "comment": "How strongly the sampled water tint delta is applied to the base water colour. 0 disables climate tint; 1 applies the current full delta; 2 exaggerates it.",
+      "ingui": "Fallback water temp strength",
+      "comment": "Strength of the temperature warmth overlay. 0 disables it; 1 uses the configured colour at its calculated alpha; 2 exaggerates it before clamping.",
       "range": {
         "min": 0.0,
         "max": 2.0,
@@ -243,27 +259,14 @@
     {
       "code": "TerrainSamplerFallbackWaterNoiseStrength",
       "type": "float",
-      "default": 0.25,
+      "default": 0.1,
       "clientSide": true,
       "ingui": "Fallback water noise",
-      "comment": "Strength of subtle value noise and sampled water texture variation applied to synthetic Pregen water. 0 is perfectly flat.",
+      "comment": "Strength of subtle deterministic value noise applied after rainfall and temperature overlays. 0 is perfectly flat.",
       "range": {
         "min": 0.0,
         "max": 1.0,
         "step": 0.01
-      }
-    },
-    {
-      "code": "TerrainSamplerFallbackWaterHeightShadeStrength",
-      "type": "float",
-      "default": 0.75,
-      "clientSide": true,
-      "ingui": "Fallback water height shading",
-      "comment": "Strength of the vanilla-style height/shadow pass on synthetic Pregen water. 0 disables height shading; 1 applies the full current shade pass; 2 exaggerates it.",
-      "range": {
-        "min": 0.0,
-        "max": 2.0,
-        "step": 0.05
       }
     },
     {
