@@ -256,6 +256,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
             ? trueColorTerrainFallbackDiskCache
             : terrainFallbackDiskCache;
 
+    private static bool TerrainFallbackLayerActive => FastMapTerrainFallbackLayer.IsFallbackLayerActive;
+
     private string NormalFallbackCacheVariant()
     {
         string palette = config.UseBrownTerrainFallbackPalette ? "brown" : "vanilla";
@@ -421,7 +423,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 #endif
         foreach (FastVec2i pageKey in visiblePageKeys)
         {
-            if (fallbackPages.TryGetValue(pageKey, out FastMapPageComponent? fallbackPage))
+            if (TerrainFallbackLayerActive && fallbackPages.TryGetValue(pageKey, out FastMapPageComponent? fallbackPage))
             {
                 if (!fallbackPage.HasGpuTexture && fallbackPage.HasPixelBuffer)
                 {
@@ -663,7 +665,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
         foreach (FastVec2i pageKey in visiblePageKeys)
         {
             QueuePageLoad(pageKey);
-            QueueVisibleTerrainFallbackCacheLoad(pageKey);
+            if (TerrainFallbackLayerActive)
+            {
+                QueueVisibleTerrainFallbackCacheLoad(pageKey);
+            }
+
             if (pagesNeedingUpload.Contains(pageKey))
             {
                 QueuePageUpload(pageKey);
@@ -671,7 +677,10 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
 
         StartPageLoadTasks();
-        StartTerrainFallbackCacheLoadTasks();
+        if (TerrainFallbackLayerActive)
+        {
+            StartTerrainFallbackCacheLoadTasks();
+        }
     }
 
     private void ReprioritizeViewportQueues()
@@ -846,7 +855,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void StartTerrainFallbackCacheLoadTasks()
     {
-        if (disposed || !config.EnableTerrainSamplerFallbackMaps)
+        if (disposed || !TerrainFallbackLayerActive)
         {
             return;
         }
@@ -873,7 +882,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private bool CanStartTerrainSamplerLoads()
     {
-        return config.EnableTerrainSamplerFallbackMaps
+        return TerrainFallbackLayerActive
             && HasReadyPageCapacity()
             && !HasPendingViewportFillWork();
     }
@@ -1128,6 +1137,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private bool QueueVisibleTerrainFallbackCacheLoad(FastVec2i pageKey)
     {
+        if (!TerrainFallbackLayerActive)
+        {
+            return false;
+        }
+
         if (!CurrentTerrainFallbackDiskCache.MightContain(pageKey))
         {
             return false;
@@ -1349,7 +1363,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private bool CanUseTerrainSamplerFallback(out TerrainSamplerSkipReason skipReason)
     {
-        if (!config.EnableTerrainSamplerFallbackMaps)
+        if (!TerrainFallbackLayerActive)
         {
             skipReason = TerrainSamplerSkipReason.Disabled;
             return false;
@@ -2615,6 +2629,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 queuedPageLoads.Remove(snapshot.PageKey);
             }
 
+            if (snapshot.Synthetic && !TerrainFallbackLayerActive)
+            {
+                continue;
+            }
+
             FastMapPageComponent page = snapshot.Synthetic
                 ? GetOrCreateFallbackPage(snapshot.PageKey)
                 : GetOrCreatePage(snapshot.PageKey);
@@ -2628,7 +2647,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
             {
                 if (snapshot.Synthetic)
                 {
-                    UploadFallbackPage(page);
+                    if (TerrainFallbackLayerActive)
+                    {
+                        UploadFallbackPage(page);
+                    }
+
                     if (!page.HasGpuTexture && config.LogStats)
                     {
                         api.Logger.Notification("[FastMap] Terrain fallback page {0}/{1} did not have a GPU texture after upload attempt.", snapshot.PageKey.X, snapshot.PageKey.Y);
@@ -2769,7 +2792,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
             }
 
             bool hasCompleteTruePage = EnsureVisibleTruePageQueuedOrUploaded(pageKey);
-            if (!hasCompleteTruePage)
+            if (!hasCompleteTruePage && TerrainFallbackLayerActive)
             {
                 EnsureVisibleFallbackPageQueuedOrUploaded(pageKey);
             }
@@ -2778,6 +2801,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void EnsureVisibleFallbackPageQueuedOrUploaded(FastVec2i pageKey)
     {
+        if (!TerrainFallbackLayerActive)
+        {
+            return;
+        }
+
         if (fallbackPages.TryGetValue(pageKey, out FastMapPageComponent? fallbackPage))
         {
             if (!fallbackPage.HasGpuTexture && fallbackPage.HasPixelBuffer)

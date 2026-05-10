@@ -15,7 +15,6 @@ public sealed class FastMapConfig
     public bool CleanupKeepLatestPageVersion { get; set; } = true;
     public bool EnableVanillaMapDbWriteback { get; set; } = true;
     public bool CleanupStaleVanillaMapDbSidecarsOnStartup { get; set; } = true;
-    public bool EnableTerrainSamplerFallbackMaps { get; set; } = true;
     public bool EnableTerrainSamplerFallbackBackgroundGeneration { get; set; } = true;
     public int TerrainSamplerFallbackSampleStep { get; set; } = 4;
     public int TerrainSamplerFallbackResolutionScale { get; set; } = 4;
@@ -56,7 +55,7 @@ public sealed class FastMapConfig
     public float LogStatsIntervalSeconds { get; set; } = 5.0f;
     public bool LogTrueColorBrightSamples { get; set; } = false;
     public bool EnableTerrainSamplerRainfallLayer { get; set; } = false;
-    public bool EnableTerrainSamplerTemperatureLayer { get; set; } = true;
+    public bool EnableTerrainSamplerTemperatureLayer { get; set; } = false;
     public bool EnableTerrainSamplerForestDensityLayer { get; set; } = false;
     public bool EnableTerrainSamplerShrubDensityLayer { get; set; } = false;
     public bool EnableHitchDiagnostics { get; set; } = false;

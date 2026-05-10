@@ -139,14 +139,6 @@
       "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler shrub density values. Requires Terrain Sampler column sample support."
     },
     {
-      "code": "EnableTerrainSamplerFallbackMaps",
-      "type": "boolean",
-      "default": false,
-      "clientSide": true,
-      "ingui": "Terrain sampler fallback maps",
-      "comment": "Experimental. When Algernon's Terrain Sampler is available in-process, synthesize non-true-colour map pages from sampled terrain heights for undiscovered cache misses."
-    },
-    {
       "code": "EnableTerrainSamplerFallbackBackgroundGeneration",
       "type": "boolean",
       "default": false,
