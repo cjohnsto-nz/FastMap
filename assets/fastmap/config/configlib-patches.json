@@ -194,6 +194,19 @@
       }
     },
     {
+      "code": "TerrainSamplerFallbackSeasonUploadBucketsPerYear",
+      "type": "integer",
+      "default": 12,
+      "clientSide": true,
+      "ingui": "Fallback season refreshes/year",
+      "comment": "How many times per in-game year uploaded Pregen fallback textures are re-tinted from the neutral disk cache. Higher values track seasons more smoothly but cause more GPU re-uploads.",
+      "range": {
+        "min": 1,
+        "max": 128,
+        "step": 1
+      }
+    },
+    {
       "code": "UseBrownTerrainFallbackPalette",
       "type": "boolean",
       "default": true,

@@ -190,9 +190,20 @@ internal sealed class FastMapPageComponent : MapComponent
 
     public void Upload()
     {
+        Upload(pixels);
+    }
+
+    public void Upload(int[]? uploadPixels)
+    {
         if (!HasAnyValidChunks || pixels == null)
         {
             return;
+        }
+
+        uploadPixels ??= pixels;
+        if (uploadPixels.Length != texturePixelSize * texturePixelSize)
+        {
+            throw new ArgumentException("FastMap page upload dimensions must match the page texture size.", nameof(uploadPixels));
         }
 
         if (texture == null || texture.Disposed)
@@ -200,7 +211,7 @@ internal sealed class FastMapPageComponent : MapComponent
             texture = new LoadedTexture(capi, 0, texturePixelSize, texturePixelSize);
         }
 
-        capi.Render.LoadOrUpdateTextureFromRgba(pixels, false, 0, ref texture);
+        capi.Render.LoadOrUpdateTextureFromRgba(uploadPixels, false, 0, ref texture);
         capi.Render.BindTexture2d(texture.TextureId);
         capi.Render.GlGenerateTex2DMipmaps();
         RefreshVisibleChunksMesh();
@@ -208,9 +219,20 @@ internal sealed class FastMapPageComponent : MapComponent
 
     public void Upload(FastMapTextureAtlas atlas)
     {
+        Upload(atlas, pixels);
+    }
+
+    public void Upload(FastMapTextureAtlas atlas, int[]? uploadPixels)
+    {
         if (!HasAnyValidChunks || pixels == null)
         {
             return;
+        }
+
+        uploadPixels ??= pixels;
+        if (uploadPixels.Length != texturePixelSize * texturePixelSize)
+        {
+            throw new ArgumentException("FastMap atlas upload dimensions must match the page texture size.", nameof(uploadPixels));
         }
 
         if (texture != null && !texture.Disposed)
@@ -220,7 +242,7 @@ internal sealed class FastMapPageComponent : MapComponent
         }
 
         FastMapAtlasSlot? previousSlot = atlasSlot;
-        atlasSlot = atlas.Upload(PageKey, pixels, texturePixelSize);
+        atlasSlot = atlas.Upload(PageKey, uploadPixels, texturePixelSize);
         if (previousSlot != atlasSlot)
         {
             visibleChunksMeshDirty = true;

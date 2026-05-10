@@ -21,6 +21,7 @@ public sealed class FastMapConfig
     public bool EnableTerrainSamplerFallbackTrueColor { get; set; } = true;
     public int TerrainSamplerFallbackTrueColorProbeStride { get; set; } = 4;
     public int TerrainSamplerFallbackSnowStartHeight { get; set; } = 250;
+    public int TerrainSamplerFallbackSeasonUploadBucketsPerYear { get; set; } = 12;
     public bool UseBrownTerrainFallbackPalette { get; set; } = false;
     public bool EnableTrueColorAirSurfaceRepair { get; set; } = true;
     public int TrueColorAirSurfaceRepairDepth { get; set; } = 32;
@@ -55,7 +56,7 @@ public sealed class FastMapConfig
     public float LogStatsIntervalSeconds { get; set; } = 5.0f;
     public bool LogTrueColorBrightSamples { get; set; } = false;
     public bool EnableTerrainSamplerRainfallLayer { get; set; } = false;
-    public bool EnableTerrainSamplerTemperatureLayer { get; set; } = true;
+    public bool EnableTerrainSamplerTemperatureLayer { get; set; } = false;
     public bool EnableTerrainSamplerForestDensityLayer { get; set; } = false;
     public bool EnableTerrainSamplerShrubDensityLayer { get; set; } = false;
     public bool EnableHitchDiagnostics { get; set; } = false;
@@ -93,6 +94,7 @@ public sealed class FastMapConfig
         TerrainSamplerFallbackResolutionScale = Math.Clamp(TerrainSamplerFallbackResolutionScale, 1, 32);
         TerrainSamplerFallbackTrueColorProbeStride = Math.Clamp(TerrainSamplerFallbackTrueColorProbeStride, 1, 32);
         TerrainSamplerFallbackSnowStartHeight = Math.Clamp(TerrainSamplerFallbackSnowStartHeight, 1, 100000);
+        TerrainSamplerFallbackSeasonUploadBucketsPerYear = Math.Clamp(TerrainSamplerFallbackSeasonUploadBucketsPerYear, 1, 128);
         TrueColorAirSurfaceRepairDepth = Math.Clamp(TrueColorAirSurfaceRepairDepth, 1, 64);
         TerrainSamplerFallbackMaxPagesPerSession = Math.Clamp(TerrainSamplerFallbackMaxPagesPerSession, 0, 100000);
         TerrainSamplerFallbackRadiusChunks = Math.Clamp(TerrainSamplerFallbackRadiusChunks, 0, 8192);

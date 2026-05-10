@@ -27,6 +27,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private const int TilePixelCount = ChunkSize * ChunkSize;
     private const int NativeDbQueryBatchSize = 512;
     private const int PageLoadsPerTask = 64;
+    private const int PackedFallbackGrassMarker = 0x42;
     private static readonly FastVec2i[] MinimalDirtyRepairOffsets =
     {
         new(0, 0),
@@ -36,7 +37,6 @@ public sealed class FastPageMapLayer : RGBMapLayer
         new(0, 1),
         new(1, 1)
     };
-
     private readonly ICoreClientAPI capi;
     private readonly FastMapConfig config;
     private readonly FastMapPageDiskCache pageDiskCache;
@@ -115,6 +115,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private readonly object surfaceTileCacheLock = new();
     private readonly Dictionary<FastVec2i, FastMapSurfaceTile> surfaceTileCache = new();
     private bool colorAccurate;
+    private int fallbackSeasonUploadBucket = int.MinValue;
     private float colorRandomizationWeight = 0.6f;
     private float workerAccum;
     private float prewarmAccum;
@@ -167,6 +168,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private long terrainSamplerFallbackTrueColorInvalidHeight;
     private long terrainSamplerFallbackTrueColorAir;
     private long terrainSamplerFallbackTrueColorErrors;
+    private long terrainSamplerFallbackSeasonalUploadPages;
+    private long terrainSamplerFallbackSeasonalPixels;
     private long pageUploads;
     private long pageSaves;
     private long generatedChunks;
@@ -261,13 +264,13 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private string NormalFallbackCacheVariant()
     {
         string palette = config.UseBrownTerrainFallbackPalette ? "brown" : "vanilla";
-        return "normal-" + palette + "-v10-h" + config.TerrainSamplerFallbackSnowStartHeight;
+        return "normal-" + palette + "-v11-h" + config.TerrainSamplerFallbackSnowStartHeight;
     }
 
     private string TrueColorFallbackCacheVariant()
     {
         string palette = config.UseBrownTerrainFallbackPalette ? "brown" : "palette";
-        return "truecolour-" + palette + "-v7-h" + config.TerrainSamplerFallbackSnowStartHeight;
+        return "truecolour-" + palette + "-v10-h" + config.TerrainSamplerFallbackSnowStartHeight;
     }
 
     public override void OnLoaded()
@@ -380,6 +383,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 #if FASTMAPHITCHDIAGNOSTICS
         MarkFrameProfiler("fastmap-ready-patches");
 #endif
+        RefreshSeasonalFallbackUploadsIfNeeded();
         EnsureVisiblePagesQueuedOrUploaded(stopwatch);
 #if FASTMAPHITCHDIAGNOSTICS
         MarkFrameProfiler("fastmap-ensure-visible");
@@ -1763,13 +1767,12 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 else if (usePaletteFallback)
                 {
                     bool paletteSnow = IsTerrainSamplerSnow(terrainSample, height, seaLevel);
-                    GetTerrainSamplerGrassSpectrumWeights(terrainSample, height, seaLevel, out float dryGrassWeight, out float lushGrassWeight);
                     if (!fallbackPalette.TryGetColor(
                         height,
                         seaLevel,
                         paletteSnow,
-                        dryGrassWeight,
-                        lushGrassWeight,
+                        dryGrassWeight: 0f,
+                        lushGrassWeight: 0f,
                         worldX,
                         worldZ,
                         out int paletteColor,
@@ -1780,12 +1783,15 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
                     if (!flattenPaletteColor && !paletteSnow)
                     {
-                        paletteColor = TerrainSamplerPaletteClimateTintColor(paletteColor, terrainSample, worldX, worldZ, seaLevel);
+                        int shadedAlbedo = TerrainSamplerShadeColor(paletteColor, height, westHeight, northHeight, diagonalHeight, seaLevel);
+                        color = PackFallbackGrassPixel(shadedAlbedo, terrainSample, height, seaLevel);
                     }
-
-                    color = flattenPaletteColor
-                        ? paletteColor
-                        : TerrainSamplerShadeColor(paletteColor, height, westHeight, northHeight, diagonalHeight, seaLevel);
+                    else
+                    {
+                        color = flattenPaletteColor
+                            ? paletteColor
+                            : TerrainSamplerShadeColor(paletteColor, height, westHeight, northHeight, diagonalHeight, seaLevel);
+                    }
                 }
                 else
                 {
@@ -2198,12 +2204,33 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private bool IsTerrainSamplerSnow(FastMapTerrainSamplerColumn sample, int height, int seaLevel)
     {
-        if (height < config.TerrainSamplerFallbackSnowStartHeight || height <= seaLevel || !sample.HasClimate)
+        if (height < TerrainSamplerFallbackSnowStartHeight(seaLevel) || height <= seaLevel || !sample.HasClimate)
         {
             return false;
         }
 
         return TerrainSamplerTemperatureCelsius(sample, height, seaLevel) < -10f;
+    }
+
+    private int TerrainSamplerFallbackSnowStartHeight(int seaLevel)
+    {
+        int worldHeight = Math.Max(seaLevel + 1, api.World.BlockAccessor.MapSizeY);
+        const int referenceWorldHeight = 384;
+        int referenceSeaLevel = TerrainSamplerReferenceSeaLevel(referenceWorldHeight);
+        int referenceSkyHeight = Math.Max(1, referenceWorldHeight - referenceSeaLevel);
+        int worldSkyHeight = Math.Max(1, worldHeight - seaLevel);
+        float relativeAboveSea = Math.Clamp(
+            (config.TerrainSamplerFallbackSnowStartHeight - referenceSeaLevel) / (float)referenceSkyHeight,
+            0f,
+            1f);
+
+        int scaledHeight = seaLevel + (int)MathF.Round(relativeAboveSea * worldSkyHeight);
+        return Math.Clamp(scaledHeight, seaLevel + 1, worldHeight - 1);
+    }
+
+    private static int TerrainSamplerReferenceSeaLevel(int worldHeight)
+    {
+        return (int)(worldHeight * 0.43137254901960786);
     }
 
     private static float TerrainSamplerTemperatureCelsius(FastMapTerrainSamplerColumn sample, int height, int seaLevel)
@@ -2945,7 +2972,10 @@ public sealed class FastPageMapLayer : RGBMapLayer
         {
             if (!fallbackPage.HasGpuTexture && fallbackPage.HasPixelBuffer)
             {
-                UploadFallbackPage(fallbackPage);
+                if (!UploadFallbackPage(fallbackPage))
+                {
+                    return;
+                }
             }
 
             if (fallbackPage.HasGpuTexture)
@@ -3023,16 +3053,22 @@ public sealed class FastPageMapLayer : RGBMapLayer
         FastMapProfileRecorder.RecordClient("fastmap_page_upload", page.PageKey.X, 0, page.PageKey.Y, stopwatch.Elapsed.TotalMilliseconds);
     }
 
-    private void UploadFallbackPage(FastMapPageComponent page)
+    private bool UploadFallbackPage(FastMapPageComponent page)
     {
         Stopwatch stopwatch = Stopwatch.StartNew();
+        int[]? uploadPixels = CreateSeasonalFallbackUploadPixels(page, out bool delayUpload);
+        if (delayUpload)
+        {
+            return false;
+        }
+
         if (fallbackTextureAtlas != null)
         {
-            page.Upload(fallbackTextureAtlas);
+            page.Upload(fallbackTextureAtlas, uploadPixels);
         }
         else
         {
-            page.Upload();
+            page.Upload(uploadPixels);
         }
 
         if (page.HasGpuTexture && page.HasPixelBuffer)
@@ -3045,6 +3081,258 @@ public sealed class FastPageMapLayer : RGBMapLayer
         Interlocked.Increment(ref pageUploads);
         Interlocked.Add(ref pageUploadMs, stopwatch.ElapsedMilliseconds);
         FastMapProfileRecorder.RecordClient("fastmap_terrain_fallback_page_upload", page.PageKey.X, 0, page.PageKey.Y, stopwatch.Elapsed.TotalMilliseconds);
+        return true;
+    }
+
+    private void RefreshSeasonalFallbackUploadsIfNeeded()
+    {
+        if (!TerrainFallbackLayerActive || !ShouldSeasonallyTintFallbackGrass())
+        {
+            fallbackSeasonUploadBucket = int.MinValue;
+            return;
+        }
+
+        int bucket = CurrentFallbackSeasonUploadBucket();
+        if (fallbackSeasonUploadBucket == int.MinValue)
+        {
+            fallbackSeasonUploadBucket = bucket;
+            return;
+        }
+
+        if (bucket == fallbackSeasonUploadBucket)
+        {
+            return;
+        }
+
+        fallbackSeasonUploadBucket = bucket;
+        foreach (FastMapPageComponent page in fallbackPages.Values)
+        {
+            if (page.HasGpuTexture)
+            {
+                page.DisposeTexture();
+            }
+        }
+    }
+
+    private int CurrentFallbackSeasonUploadBucket()
+    {
+        int bucketsPerYear = Math.Clamp(config.TerrainSamplerFallbackSeasonUploadBucketsPerYear, 1, 128);
+        float seasonRel = CurrentFallbackSeasonRel();
+        seasonRel -= MathF.Floor(seasonRel);
+        return Math.Clamp((int)(seasonRel * bucketsPerYear), 0, bucketsPerYear - 1);
+    }
+
+    private float CurrentFallbackSeasonRel()
+    {
+        BlockPos pos = capi.World.Player?.Entity?.Pos.AsBlockPos ?? new BlockPos(0, api.World.SeaLevel, 0);
+        return capi.World.Calendar.GetSeasonRel(pos);
+    }
+
+    private bool ShouldSeasonallyTintFallbackGrass()
+    {
+        return !config.UseBrownTerrainFallbackPalette
+            && (fallbackPalette.HasClimatePlantTint || fallbackPalette.HasSeasonalGrassTint);
+    }
+
+    private int[]? CreateSeasonalFallbackUploadPixels(FastMapPageComponent page, out bool delayUpload)
+    {
+        delayUpload = false;
+        if (!ShouldSeasonallyTintFallbackGrass() || !page.HasPixelBuffer)
+        {
+            return null;
+        }
+
+        int[]? uploadPixels = page.CopyPixels();
+        if (uploadPixels == null)
+        {
+            return null;
+        }
+
+        int pixelSize = page.TexturePixelSize;
+        int sampleStep = Math.Max(1, (FastMapPageComponent.PageSize + pixelSize - 1) / pixelSize);
+        int baseBlockX = page.PageKey.X * FastMapPageComponent.PageSize;
+        int baseBlockZ = page.PageKey.Y * FastMapPageComponent.PageSize;
+        int seaLevel = api.World.SeaLevel;
+        BlockPos centerPos = new(
+            baseBlockX + FastMapPageComponent.PageSize / 2,
+            seaLevel,
+            baseBlockZ + FastMapPageComponent.PageSize / 2);
+        float yearRel = capi.World.Calendar.GetSeasonRel(centerPos);
+        const float hemisphereOffset = 0f;
+
+        int seasonalPixels = 0;
+        for (int z = 0; z < pixelSize; z++)
+        {
+            int worldZ = baseBlockZ + z * sampleStep;
+            for (int x = 0; x < pixelSize; x++)
+            {
+                int index = z * pixelSize + x;
+                int packed = uploadPixels[index];
+                if (!TryUnpackFallbackGrassPixel(
+                    packed,
+                    out int shadedAlbedo,
+                    out int rain,
+                    out int adjustedTemperature))
+                {
+                    continue;
+                }
+
+                int worldX = baseBlockX + x * sampleStep;
+                uploadPixels[index] = ApplyFallbackGrassTints(
+                    shadedAlbedo,
+                    worldX,
+                    worldZ,
+                    yearRel,
+                    hemisphereOffset,
+                    TerrainSamplerGrassSeasonWeightFromAdjustedTemperature(adjustedTemperature),
+                    rain,
+                    adjustedTemperature);
+                seasonalPixels++;
+            }
+        }
+
+        if (seasonalPixels <= 0)
+        {
+            return null;
+        }
+
+        Interlocked.Increment(ref terrainSamplerFallbackSeasonalUploadPages);
+        Interlocked.Add(ref terrainSamplerFallbackSeasonalPixels, seasonalPixels);
+        return uploadPixels;
+    }
+
+    private int ApplyFallbackGrassTints(
+        int color,
+        int worldX,
+        int worldZ,
+        float yearRel,
+        float hemisphereOffset,
+        float seasonWeight,
+        int rain,
+        int adjustedTemperature)
+    {
+        bool hasTint = fallbackPalette.TryGetClimatePlantTintAdjusted(rain, adjustedTemperature, out int tint);
+        if (seasonWeight > 0.001f)
+        {
+            float seasonXRel = yearRel + FallbackSeasonXNoise(worldX, worldZ);
+            float seasonYRel = FallbackSeasonYNoise(worldX, worldZ);
+            if (fallbackPalette.TryGetSeasonalGrassTint(seasonXRel, seasonYRel, hemisphereOffset, out int seasonalTint))
+            {
+                tint = hasTint
+                    ? ColorUtil.ColorOverlay(tint, seasonalTint, seasonWeight)
+                    : seasonalTint;
+                hasTint = true;
+            }
+        }
+
+        return hasTint
+            ? ColorUtil.ColorMultiplyEach(color, tint) | unchecked((int)0xFF000000)
+            : color;
+    }
+
+    private static int PackFallbackGrassPixel(int shadedAlbedo, FastMapTerrainSamplerColumn sample, int height, int seaLevel)
+    {
+        int adjustedTemperature = sample.HasClimate
+            ? Climate.GetAdjustedTemperature(TerrainSamplerUnscaledTemperature(sample), height - seaLevel)
+            : 128;
+        int rain = sample.HasClimate
+            ? TerrainSamplerUnscaledRainfall(sample)
+            : 128;
+        int albedo = MapColorLuma(shadedAlbedo);
+        return (PackedFallbackGrassMarker << 24)
+            | ((Math.Clamp(adjustedTemperature, 0, 255) & 0xFF) << 16)
+            | ((Math.Clamp(rain, 0, 255) & 0xFF) << 8)
+            | (albedo & 0xFF);
+    }
+
+    private static bool TryUnpackFallbackGrassPixel(int packed, out int shadedAlbedo, out int rain, out int adjustedTemperature)
+    {
+        if (((packed >> 24) & 0xFF) != PackedFallbackGrassMarker)
+        {
+            shadedAlbedo = 0;
+            rain = 0;
+            adjustedTemperature = 0;
+            return false;
+        }
+
+        int albedo = packed & 0xFF;
+        rain = (packed >> 8) & 0xFF;
+        adjustedTemperature = (packed >> 16) & 0xFF;
+        shadedAlbedo = unchecked((int)0xFF000000) | (albedo << 16) | (albedo << 8) | albedo;
+        return true;
+    }
+
+    private static int MapColorLuma(int color)
+    {
+        int r = color & 0xFF;
+        int g = (color >> 8) & 0xFF;
+        int b = (color >> 16) & 0xFF;
+        return Math.Clamp((int)MathF.Round(r * 0.299f + g * 0.587f + b * 0.114f), 0, 255);
+    }
+
+    private static float FallbackSeasonXNoise(int worldX, int worldZ)
+    {
+        // The pregen cache is already low-res, so use per-fallback-pixel jitter here rather
+        // than vanilla's broad block-space noise. This keeps seasonal tint detail at cache resolution.
+        float coarse = FallbackNoise01(worldX, worldZ, 0x5EEDu) - 0.5f;
+        float fine = FallbackNoise01(worldX * 3 + 17, worldZ * 3 - 29, 0xA11CEu) - 0.5f;
+        return coarse / 32f + fine / 96f;
+    }
+
+    private static float FallbackSeasonYNoise(int worldX, int worldZ)
+    {
+        float low = FallbackNoise01(worldX, worldZ, 0xC0104u);
+        float high = FallbackNoise01(worldX * 5 + 11, worldZ * 5 - 7, 0x5EA50u);
+        return Math.Clamp(low * 0.7f + high * 0.3f, 0.03125f, 0.96875f);
+    }
+
+    private static float FallbackNoise01(int x, int z, uint salt)
+    {
+        return (MixFallbackNoise((uint)x ^ salt, (uint)z, salt >> 8) & 0xFFFF) / 65535f;
+    }
+
+    private static float TerrainSamplerGrassSeasonWeight(int unscaledTemperature, int height, int seaLevel)
+    {
+        // Mirrors vanilla's colormap shader intent: derive season strength from ground-level temperature.
+        float x = unscaledTemperature + Math.Max(0f, (height - seaLevel) * 1.5f);
+        return TerrainSamplerGrassSeasonWeightFromGroundTemperature(x);
+    }
+
+    private static float TerrainSamplerGrassSeasonWeightFromAdjustedTemperature(int adjustedTemperature)
+    {
+        return TerrainSamplerGrassSeasonWeightFromGroundTemperature(adjustedTemperature);
+    }
+
+    private static float TerrainSamplerGrassSeasonWeightFromGroundTemperature(float x)
+    {
+        return Math.Clamp(
+            0.5f - MathF.Cos(x / 42f) / 2.3f
+            + Math.Max(0f, 128f - x) / 512f
+            - Math.Max(0f, x - 130f) / 200f,
+            0f,
+            1f);
+    }
+
+    private static int TerrainSamplerUnscaledTemperature(FastMapTerrainSamplerColumn sample)
+    {
+        int unscaledTemp = (sample.ClimateColor >> 16) & 0xFF;
+        if (unscaledTemp == 0)
+        {
+            unscaledTemp = Math.Clamp((int)MathF.Round(sample.Temperature * 255f), 0, 255);
+        }
+
+        return unscaledTemp;
+    }
+
+    private static int TerrainSamplerUnscaledRainfall(FastMapTerrainSamplerColumn sample)
+    {
+        int unscaledRain = (sample.ClimateColor >> 8) & 0xFF;
+        if (unscaledRain == 0)
+        {
+            unscaledRain = Math.Clamp((int)MathF.Round(sample.Rainfall * 255f), 0, 255);
+        }
+
+        return unscaledRain;
     }
 
     private FastMapPageComponent GetOrCreatePage(FastVec2i pageKey)
@@ -3755,7 +4043,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
             pageDiskCache.RootPath
         );
         api.Logger.Notification(
-            "[FastMap] fallback true-colour probes={0}, hits={1}, misses={2}, missingChunk={3}, invalidHeight={4}, air={5}, errors={6}, enabled={7}, palette={8}, snowStart={9}, stride={10}",
+            "[FastMap] fallback true-colour probes={0}, hits={1}, misses={2}, missingChunk={3}, invalidHeight={4}, air={5}, errors={6}, enabled={7}, palette={8}, snowStart={9}, snowStartEffective={10}, stride={11}, seasonalActive={12}, seasonBucket={13}, seasonUploads={14}, seasonPixels={15}",
             terrainSamplerFallbackTrueColorProbes,
             terrainSamplerFallbackTrueColorHits,
             terrainSamplerFallbackTrueColorMisses,
@@ -3766,7 +4054,12 @@ public sealed class FastPageMapLayer : RGBMapLayer
             colorAccurate && config.EnableTerrainSamplerFallbackTrueColor,
             fallbackPalette.HasAny,
             config.TerrainSamplerFallbackSnowStartHeight,
-            config.TerrainSamplerFallbackTrueColorProbeStride
+            TerrainSamplerFallbackSnowStartHeight(api.World.SeaLevel),
+            config.TerrainSamplerFallbackTrueColorProbeStride,
+            ShouldSeasonallyTintFallbackGrass(),
+            ShouldSeasonallyTintFallbackGrass() ? CurrentFallbackSeasonUploadBucket() : -1,
+            terrainSamplerFallbackSeasonalUploadPages,
+            terrainSamplerFallbackSeasonalPixels
         );
         api.Logger.Notification("[FastMap] sampler scheduler {0}", TerrainSamplerSchedulerDetail());
     }

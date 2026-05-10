@@ -3,7 +3,9 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Reflection;
+using Vintagestory.API.Client;
 using Vintagestory.API.Common;
+using Vintagestory.GameContent;
 
 namespace FastMap.Map;
 
@@ -16,8 +18,19 @@ internal sealed class FastMapFallbackPalette
     private readonly int[] water;
     private readonly int[] snow;
     private readonly int[] brown;
+    private readonly ClimateTintMap? climatePlantTint;
+    private readonly SeasonalTintMap? seasonalGrassTint;
 
-    private FastMapFallbackPalette(int[] grass, int[] dryGrass, int[] lushGrass, int[] trees, int[] water, int[] snow, int[] brown)
+    private FastMapFallbackPalette(
+        int[] grass,
+        int[] dryGrass,
+        int[] lushGrass,
+        int[] trees,
+        int[] water,
+        int[] snow,
+        int[] brown,
+        ClimateTintMap? climatePlantTint,
+        SeasonalTintMap? seasonalGrassTint)
     {
         this.grass = grass;
         this.dryGrass = dryGrass;
@@ -26,6 +39,8 @@ internal sealed class FastMapFallbackPalette
         this.water = water;
         this.snow = snow;
         this.brown = brown;
+        this.climatePlantTint = climatePlantTint;
+        this.seasonalGrassTint = seasonalGrassTint;
     }
 
     public bool HasGrass => grass.Length > 0;
@@ -36,30 +51,43 @@ internal sealed class FastMapFallbackPalette
     public bool HasSnow => snow.Length > 0;
     public bool HasBrown => brown.Length > 0;
     public bool HasAny => HasGrass || HasWater || HasSnow;
+    public bool HasClimatePlantTint => climatePlantTint != null;
+    public bool HasSeasonalGrassTint => seasonalGrassTint != null;
 
     public static FastMapFallbackPalette Load(ICoreAPI api)
     {
         string assemblyDirectory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? AppContext.BaseDirectory;
-        int[] grass = LoadPalette(api, assemblyDirectory, "grass.png");
+        int[] grass = LoadTexturePalette(api, "block/plant/grasscoverage/normal-top", out string grassSource);
+        if (grass.Length == 0)
+        {
+            grass = LoadPalette(api, assemblyDirectory, "grass.png");
+            grassSource = "grass.png";
+        }
+
         int[] dryGrass = LoadPalette(api, assemblyDirectory, "drygrass.png", warnIfMissing: false);
         int[] lushGrass = LoadPalette(api, assemblyDirectory, "lushgrass.png", warnIfMissing: false);
         int[] trees = LoadPalette(api, assemblyDirectory, "trees.png", warnIfMissing: false);
         int[] water = LoadPalette(api, assemblyDirectory, "water.png");
         int[] snow = LoadPalette(api, assemblyDirectory, "snow.png");
         int[] brown = LoadPalette(api, assemblyDirectory, "map-bkg.png", warnIfMissing: false);
+        ClimateTintMap? climatePlantTint = LoadClimateTintMap(api, "environment/planttint", padding: 4);
+        SeasonalTintMap? seasonalGrassTint = LoadSeasonalTintMap(api, "environment/seasons/grasstint");
 
         api.Logger.Notification(
-            "[FastMap] Terrain fallback palettes loaded: grass={0}, dryGrass={1}, lushGrass={2}, trees={3}, water={4}, snow={5}, brown={6}, path={7}",
+            "[FastMap] Terrain fallback palettes loaded: grass={0} ({1}), dryGrass={2}, lushGrass={3}, trees={4}, water={5}, snow={6}, brown={7}, climatePlant={8}, seasonalGrass={9}, path={10}",
             grass.Length,
+            grassSource,
             dryGrass.Length,
             lushGrass.Length,
             trees.Length,
             water.Length,
             snow.Length,
             brown.Length,
+            climatePlantTint != null ? climatePlantTint.Width + "x" + climatePlantTint.Height : "missing",
+            seasonalGrassTint != null ? seasonalGrassTint.Width + "x" + seasonalGrassTint.Height : "missing",
             assemblyDirectory);
 
-        return new FastMapFallbackPalette(grass, dryGrass, lushGrass, trees, water, snow, brown);
+        return new FastMapFallbackPalette(grass, dryGrass, lushGrass, trees, water, snow, brown, climatePlantTint, seasonalGrassTint);
     }
 
     public bool TryGetColor(
@@ -177,6 +205,42 @@ internal sealed class FastMapFallbackPalette
         return true;
     }
 
+    public bool TryGetSeasonalGrassTint(float yearRel, float yRel, float hemisphereOffset, out int color)
+    {
+        if (seasonalGrassTint == null)
+        {
+            color = 0;
+            return false;
+        }
+
+        color = seasonalGrassTint.Sample(yearRel, yRel, hemisphereOffset);
+        return true;
+    }
+
+    public bool TryGetClimatePlantTint(int rain, int unscaledTemperature, int heightAboveSeaLevel, out int color)
+    {
+        if (climatePlantTint == null)
+        {
+            color = 0;
+            return false;
+        }
+
+        color = climatePlantTint.Sample(rain, unscaledTemperature, heightAboveSeaLevel);
+        return true;
+    }
+
+    public bool TryGetClimatePlantTintAdjusted(int rain, int adjustedTemperature, out int color)
+    {
+        if (climatePlantTint == null)
+        {
+            color = 0;
+            return false;
+        }
+
+        color = climatePlantTint.SampleAdjusted(rain, adjustedTemperature);
+        return true;
+    }
+
     private static int[] LoadPalette(ICoreAPI api, string directory, string filename, bool warnIfMissing = true)
     {
         string path = Path.Combine(directory, filename);
@@ -201,6 +265,177 @@ internal sealed class FastMapFallbackPalette
         }
     }
 
+    private static int[] LoadTexturePalette(ICoreAPI api, string path, out string source)
+    {
+        source = "textures/" + path.Trim('/').Replace('\\', '/') + ".png";
+        if (api is not ICoreClientAPI capi)
+        {
+            return Array.Empty<int>();
+        }
+
+        try
+        {
+            IAsset? asset = FindTextureAsset(api, path);
+            if (asset == null)
+            {
+                return Array.Empty<int>();
+            }
+
+            source = asset.Location.ToShortString();
+            using BitmapRef bitmap = asset.ToBitmap(capi);
+            return BitmapToUniqueOpaquePalette(bitmap);
+        }
+        catch (Exception ex)
+        {
+            api.Logger.Warning("[FastMap] Failed to read terrain fallback texture palette textures/{0}.png: {1}", path, ex.Message);
+            return Array.Empty<int>();
+        }
+    }
+
+    private static int[] BitmapToUniqueOpaquePalette(BitmapRef bitmap)
+    {
+        int[] sourcePixels = bitmap.Pixels;
+        List<int> colors = new();
+        HashSet<int> seen = new();
+        for (int i = 0; i < sourcePixels.Length; i++)
+        {
+            int sourceColor = sourcePixels[i];
+            if (((sourceColor >> 24) & 0xFF) <= 8)
+            {
+                continue;
+            }
+
+            int color = SkColorToMapColor(sourceColor) | unchecked((int)0xFF000000);
+            if (seen.Add(color))
+            {
+                colors.Add(color);
+            }
+        }
+
+        return colors.ToArray();
+    }
+
+    private static ClimateTintMap? LoadClimateTintMap(ICoreAPI api, string path, int padding)
+    {
+        if (api is not ICoreClientAPI capi)
+        {
+            return null;
+        }
+
+        try
+        {
+            IAsset? asset = FindTextureAsset(api, path);
+            if (asset == null)
+            {
+                api.Logger.Warning("[FastMap] Climate plant tint asset not found: textures/{0}.png", path);
+                return null;
+            }
+
+            using BitmapRef bitmap = asset.ToBitmap(capi);
+            int[] sourcePixels = bitmap.Pixels;
+            int[] pixels = new int[sourcePixels.Length];
+            for (int i = 0; i < sourcePixels.Length; i++)
+            {
+                pixels[i] = SkColorToMapColor(sourcePixels[i]);
+            }
+
+            return new ClimateTintMap(bitmap.Width, bitmap.Height, Math.Max(0, padding), pixels);
+        }
+        catch (Exception ex)
+        {
+            api.Logger.Warning("[FastMap] Failed to load climate plant tint asset textures/{0}.png: {1}", path, ex.Message);
+            return null;
+        }
+    }
+
+    private static SeasonalTintMap? LoadSeasonalTintMap(ICoreAPI api, string path)
+    {
+        if (api is not ICoreClientAPI capi)
+        {
+            return null;
+        }
+
+        try
+        {
+            IAsset? asset = FindTextureAsset(api, path);
+            if (asset == null)
+            {
+                api.Logger.Warning("[FastMap] Seasonal grass tint asset not found: textures/{0}.png", path);
+                return null;
+            }
+
+            using BitmapRef bitmap = asset.ToBitmap(capi);
+            int[] sourcePixels = bitmap.Pixels;
+            int[] pixels = new int[sourcePixels.Length];
+            for (int i = 0; i < sourcePixels.Length; i++)
+            {
+                pixels[i] = SkColorToMapColor(sourcePixels[i]);
+            }
+
+            return new SeasonalTintMap(bitmap.Width, bitmap.Height, pixels);
+        }
+        catch (Exception ex)
+        {
+            api.Logger.Warning("[FastMap] Failed to load seasonal grass tint asset textures/{0}.png: {1}", path, ex.Message);
+            return null;
+        }
+    }
+
+    private static IAsset? FindTextureAsset(ICoreAPI api, string path)
+    {
+        string normalized = path.Replace('\\', '/').Trim('/');
+        string withoutExtension = normalized.EndsWith(".png", StringComparison.OrdinalIgnoreCase)
+            ? normalized[..^4]
+            : normalized;
+        string withExtension = withoutExtension + ".png";
+        string fullPath = "textures/" + withExtension;
+
+        string?[] preferredDomains = { "survival", "game", null };
+        for (int i = 0; i < preferredDomains.Length; i++)
+        {
+            string? domain = preferredDomains[i];
+            IAsset? asset = domain != null
+                ? api.Assets.TryGet(new AssetLocation(domain, fullPath), loadAsset: true)
+                : api.Assets.TryGet(fullPath, loadAsset: true);
+            if (asset != null)
+            {
+                return asset;
+            }
+        }
+
+        for (int i = 0; i < preferredDomains.Length; i++)
+        {
+            string? domain = preferredDomains[i];
+            List<IAsset> assets = api.Assets.GetManyInCategory("textures", withoutExtension, domain, loadAsset: true);
+            for (int j = 0; j < assets.Count; j++)
+            {
+                IAsset asset = assets[j];
+                if (IsTexturePathMatch(asset.Location.Path, fullPath, withExtension))
+                {
+                    return asset;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsTexturePathMatch(string assetPath, string fullPath, string withExtension)
+    {
+        return assetPath.Equals(fullPath, StringComparison.OrdinalIgnoreCase)
+            || assetPath.Equals(withExtension, StringComparison.OrdinalIgnoreCase)
+            || assetPath.EndsWith('/' + withExtension, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int SkColorToMapColor(int color)
+    {
+        int a = (color >> 24) & 0xFF;
+        int r = (color >> 16) & 0xFF;
+        int g = (color >> 8) & 0xFF;
+        int b = color & 0xFF;
+        return (a << 24) | (b << 16) | (g << 8) | r;
+    }
+
     private static uint Mix(uint x, uint z, uint height)
     {
         uint hash = 2166136261u;
@@ -213,6 +448,105 @@ internal sealed class FastMapFallbackPalette
         hash *= 3266489917u;
         hash ^= hash >> 16;
         return hash;
+    }
+
+    private sealed class SeasonalTintMap
+    {
+        private readonly int[] pixels;
+
+        public SeasonalTintMap(int width, int height, int[] pixels)
+        {
+            Width = Math.Max(1, width);
+            Height = Math.Max(1, height);
+            this.pixels = pixels;
+        }
+
+        public int Width { get; }
+
+        public int Height { get; }
+
+        public int Sample(float yearRel, float yRel, float hemisphereOffset)
+        {
+            float xRel = yearRel + hemisphereOffset;
+            xRel -= MathF.Floor(xRel);
+            return SampleBilinear(xRel * (Width - 1), Math.Clamp(yRel, 0f, 1f) * (Height - 1));
+        }
+
+        private int SampleBilinear(float x, float y)
+        {
+            int x0 = Math.Clamp((int)MathF.Floor(x), 0, Width - 1);
+            int y0 = Math.Clamp((int)MathF.Floor(y), 0, Height - 1);
+            int x1 = Math.Min(Width - 1, x0 + 1);
+            int y1 = Math.Min(Height - 1, y0 + 1);
+            float tx = x - x0;
+            float ty = y - y0;
+            return BlendBilinear(
+                pixels[y0 * Width + x0],
+                pixels[y0 * Width + x1],
+                pixels[y1 * Width + x0],
+                pixels[y1 * Width + x1],
+                tx,
+                ty);
+        }
+    }
+
+    private sealed class ClimateTintMap
+    {
+        private readonly int padding;
+        private readonly int[] pixels;
+
+        public ClimateTintMap(int width, int height, int padding, int[] pixels)
+        {
+            Width = Math.Max(1, width);
+            Height = Math.Max(1, height);
+            this.padding = Math.Min(Math.Min(padding, (Width - 1) / 2), (Height - 1) / 2);
+            this.pixels = pixels;
+        }
+
+        public int Width { get; }
+
+        public int Height { get; }
+
+        public int Sample(int rain, int unscaledTemperature, int heightAboveSeaLevel)
+        {
+            int adjustedTemperature = Math.Clamp(Climate.GetAdjustedTemperature(unscaledTemperature, heightAboveSeaLevel), 0, 255);
+            return SampleAdjusted(rain, adjustedTemperature);
+        }
+
+        public int SampleAdjusted(int rain, int adjustedTemperature)
+        {
+            int innerWidth = Math.Max(1, Width - padding * 2);
+            int innerHeight = Math.Max(1, Height - padding * 2);
+            float x = Math.Clamp(adjustedTemperature, 0, 255) / 255f * (innerWidth - 1) + padding;
+            float y = Math.Clamp(rain, 0, 255) / 255f * (innerHeight - 1) + padding;
+            int x0 = Math.Clamp((int)MathF.Floor(x), 0, Width - 1);
+            int y0 = Math.Clamp((int)MathF.Floor(y), 0, Height - 1);
+            int x1 = Math.Min(Width - 1, x0 + 1);
+            int y1 = Math.Min(Height - 1, y0 + 1);
+            return BlendBilinear(
+                pixels[y0 * Width + x0],
+                pixels[y0 * Width + x1],
+                pixels[y1 * Width + x0],
+                pixels[y1 * Width + x1],
+                x - x0,
+                y - y0);
+        }
+    }
+
+    private static int BlendBilinear(int c00, int c10, int c01, int c11, float tx, float ty)
+    {
+        int r = BlendBilinearChannel(c00 & 0xFF, c10 & 0xFF, c01 & 0xFF, c11 & 0xFF, tx, ty);
+        int g = BlendBilinearChannel((c00 >> 8) & 0xFF, (c10 >> 8) & 0xFF, (c01 >> 8) & 0xFF, (c11 >> 8) & 0xFF, tx, ty);
+        int b = BlendBilinearChannel((c00 >> 16) & 0xFF, (c10 >> 16) & 0xFF, (c01 >> 16) & 0xFF, (c11 >> 16) & 0xFF, tx, ty);
+        int a = BlendBilinearChannel((c00 >> 24) & 0xFF, (c10 >> 24) & 0xFF, (c01 >> 24) & 0xFF, (c11 >> 24) & 0xFF, tx, ty);
+        return (a << 24) | (b << 16) | (g << 8) | r;
+    }
+
+    private static int BlendBilinearChannel(int c00, int c10, int c01, int c11, float tx, float ty)
+    {
+        float top = c00 + (c10 - c00) * tx;
+        float bottom = c01 + (c11 - c01) * tx;
+        return Math.Clamp((int)MathF.Round(top + (bottom - top) * ty), 0, 255);
     }
 
     private static class PngPaletteReader
