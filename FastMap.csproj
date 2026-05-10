@@ -83,6 +83,9 @@
     <Copy SourceFiles="@(ReferenceCopyLocalPaths)" DestinationFolder="$(FullModPackagePath)" />
     <ItemGroup>
       <_FallbackPaletteImages Include="grass.png" Condition="Exists('grass.png')" />
+      <_FallbackPaletteImages Include="drygrass.png" Condition="Exists('drygrass.png')" />
+      <_FallbackPaletteImages Include="lushgrass.png" Condition="Exists('lushgrass.png')" />
+      <_FallbackPaletteImages Include="trees.png" Condition="Exists('trees.png')" />
       <_FallbackPaletteImages Include="water.png" Condition="Exists('water.png')" />
       <_FallbackPaletteImages Include="snow.png" Condition="Exists('snow.png')" />
       <_FallbackPaletteImages Include="map-bkg.png" Condition="Exists('map-bkg.png')" />

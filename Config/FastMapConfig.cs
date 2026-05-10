@@ -55,7 +55,7 @@ public sealed class FastMapConfig
     public float LogStatsIntervalSeconds { get; set; } = 5.0f;
     public bool LogTrueColorBrightSamples { get; set; } = false;
     public bool EnableTerrainSamplerRainfallLayer { get; set; } = false;
-    public bool EnableTerrainSamplerTemperatureLayer { get; set; } = false;
+    public bool EnableTerrainSamplerTemperatureLayer { get; set; } = true;
     public bool EnableTerrainSamplerForestDensityLayer { get; set; } = false;
     public bool EnableTerrainSamplerShrubDensityLayer { get; set; } = false;
     public bool EnableHitchDiagnostics { get; set; } = false;

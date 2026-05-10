@@ -267,7 +267,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private string TrueColorFallbackCacheVariant()
     {
         string palette = config.UseBrownTerrainFallbackPalette ? "brown" : "palette";
-        return "truecolour-" + palette + "-v5-h" + config.TerrainSamplerFallbackSnowStartHeight;
+        return "truecolour-" + palette + "-v7-h" + config.TerrainSamplerFallbackSnowStartHeight;
     }
 
     public override void OnLoaded()
@@ -1762,14 +1762,25 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 }
                 else if (usePaletteFallback)
                 {
-                    if (!fallbackPalette.TryGetColor(height, seaLevel, config.TerrainSamplerFallbackSnowStartHeight, worldX, worldZ, out int paletteColor, out bool flattenPaletteColor))
+                    bool paletteSnow = IsTerrainSamplerSnow(terrainSample, height, seaLevel);
+                    GetTerrainSamplerGrassSpectrumWeights(terrainSample, height, seaLevel, out float dryGrassWeight, out float lushGrassWeight);
+                    if (!fallbackPalette.TryGetColor(
+                        height,
+                        seaLevel,
+                        paletteSnow,
+                        dryGrassWeight,
+                        lushGrassWeight,
+                        worldX,
+                        worldZ,
+                        out int paletteColor,
+                        out bool flattenPaletteColor))
                     {
                         return false;
                     }
 
-                    if (!flattenPaletteColor && height < config.TerrainSamplerFallbackSnowStartHeight)
+                    if (!flattenPaletteColor && !paletteSnow)
                     {
-                        paletteColor = TerrainSamplerClimateTintColor(paletteColor, terrainSample, water: false, worldX, worldZ, seaLevel);
+                        paletteColor = TerrainSamplerPaletteClimateTintColor(paletteColor, terrainSample, worldX, worldZ, seaLevel);
                     }
 
                     color = flattenPaletteColor
@@ -2042,6 +2053,57 @@ public sealed class FastPageMapLayer : RGBMapLayer
         return unchecked((int)0xFF000000) | (b << 16) | (g << 8) | r;
     }
 
+    private int TerrainSamplerPaletteClimateTintColor(int color, FastMapTerrainSamplerColumn sample, int worldX, int worldZ, int seaLevel)
+    {
+        if (!sample.HasClimate)
+        {
+            return color;
+        }
+
+        int tinted = color;
+        GetTerrainSamplerVegetationWeights(sample, seaLevel, out float forest, out float shrub);
+        if (shrub > 0f)
+        {
+            int shrubColor = fallbackPalette.TryGetTreeColor(sample.Height, worldX, worldZ, 0x9E3779B9u, out int paletteShrubColor)
+                ? paletteShrubColor
+                : unchecked((int)0xFF4F6B78);
+            shrubColor = ApplyVegetationValueNoise(shrubColor, worldX, worldZ, sample.Height, 0x9E3779B9u);
+            shrubColor = BlendFallbackBrownColor(shrubColor, unchecked((int)0xFF3A596B), 0.42f);
+            tinted = BlendFallbackBrownColor(tinted, shrubColor, Math.Clamp(shrub * 0.26f, 0f, 0.38f));
+        }
+
+        if (forest > 0f)
+        {
+            int forestColor = fallbackPalette.TryGetTreeColor(sample.Height, worldX, worldZ, 0x85EBCA6Bu, out int paletteForestColor)
+                ? paletteForestColor
+                : unchecked((int)0xFF3E5F73);
+            forestColor = ApplyVegetationValueNoise(forestColor, worldX, worldZ, sample.Height, 0x85EBCA6Bu);
+            forestColor = BlendFallbackBrownColor(forestColor, unchecked((int)0xFF2F4A5D), 0.48f);
+            tinted = BlendFallbackBrownColor(tinted, forestColor, Math.Clamp(forest * 0.5f, 0f, 0.62f));
+        }
+
+        return tinted;
+    }
+
+    private void GetTerrainSamplerGrassSpectrumWeights(
+        FastMapTerrainSamplerColumn sample,
+        int height,
+        int seaLevel,
+        out float dryWeight,
+        out float lushWeight)
+    {
+        dryWeight = 0f;
+        lushWeight = 0f;
+        if (!sample.HasClimate)
+        {
+            return;
+        }
+
+        float fertility = TerrainSamplerFertility(sample, height, seaLevel);
+        dryWeight = SmoothStep(0.42f, 0.12f, fertility);
+        lushWeight = SmoothStep(0.48f, 0.82f, fertility);
+    }
+
     private void GetTerrainSamplerVegetationWeights(FastMapTerrainSamplerColumn sample, int seaLevel, out float forest, out float shrub)
     {
         float rawForest = Math.Clamp(sample.ForestDensity, 0f, 1f);
@@ -2053,20 +2115,10 @@ public sealed class FastPageMapLayer : RGBMapLayer
             return;
         }
 
-        int unscaledRain = (sample.ClimateColor >> 8) & 0xFF;
-        if (unscaledRain == 0)
-        {
-            unscaledRain = Math.Clamp((int)MathF.Round(sample.Rainfall * 255f), 0, 255);
-        }
-
-        float adjustedRain = Climate.GetRainFall(unscaledRain, sample.Height) / 255f;
+        float adjustedRain = TerrainSamplerAdjustedRainfall(sample, sample.Height);
         float adjustedTemp = TerrainSamplerTemperatureCelsius(sample, sample.Height, seaLevel);
         float relativeHeight = TerrainSamplerRelativeHeight(sample.Height, seaLevel);
-        int fertility = Climate.GetFertility(
-            Math.Clamp((int)MathF.Round(adjustedRain * 255f), 0, 255),
-            adjustedTemp,
-            relativeHeight);
-        float fertilityRel = fertility / 255f;
+        float fertilityRel = TerrainSamplerFertility(sample, sample.Height, seaLevel);
 
         // Vanilla still uses forest/shrub maps as density gates, but tree choice is climate-scored.
         // This broad suitability curve keeps the tint closer to where actual vegetation can appear.
@@ -2091,6 +2143,25 @@ public sealed class FastPageMapLayer : RGBMapLayer
         return Math.Clamp((height - seaLevel) / (float)(mapHeight - seaLevel), 0f, 1f);
     }
 
+    private float TerrainSamplerFertility(FastMapTerrainSamplerColumn sample, int height, int seaLevel)
+    {
+        float adjustedTemp = TerrainSamplerTemperatureCelsius(sample, height, seaLevel);
+        float relativeHeight = TerrainSamplerRelativeHeight(height, seaLevel);
+        int rain = Math.Clamp((int)MathF.Round(TerrainSamplerAdjustedRainfall(sample, height) * 255f), 0, 255);
+        return Climate.GetFertility(rain, adjustedTemp, relativeHeight) / 255f;
+    }
+
+    private static float TerrainSamplerAdjustedRainfall(FastMapTerrainSamplerColumn sample, int height)
+    {
+        int unscaledRain = (sample.ClimateColor >> 8) & 0xFF;
+        if (unscaledRain == 0)
+        {
+            unscaledRain = Math.Clamp((int)MathF.Round(sample.Rainfall * 255f), 0, 255);
+        }
+
+        return Climate.GetRainFall(unscaledRain, height) / 255f;
+    }
+
     private static float SmoothStep(float edge0, float edge1, float value)
     {
         if (Math.Abs(edge1 - edge0) < 0.0001f)
@@ -2113,13 +2184,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         int worldX,
         int worldZ)
     {
-        if (height < config.TerrainSamplerFallbackSnowStartHeight || height <= seaLevel || !sample.HasClimate)
-        {
-            return color;
-        }
-
-        float temperatureCelsius = TerrainSamplerTemperatureCelsius(sample, height, seaLevel);
-        if (temperatureCelsius >= -10f)
+        if (!IsTerrainSamplerSnow(sample, height, seaLevel))
         {
             return color;
         }
@@ -2129,6 +2194,16 @@ public sealed class FastPageMapLayer : RGBMapLayer
             : unchecked((int)0xFFC0E0E0);
         snowColor = PushSnowColorTowardVanillaTarget(snowColor);
         return TerrainSamplerShadeSnowColor(snowColor, height, westHeight, northHeight, diagonalHeight, seaLevel);
+    }
+
+    private bool IsTerrainSamplerSnow(FastMapTerrainSamplerColumn sample, int height, int seaLevel)
+    {
+        if (height < config.TerrainSamplerFallbackSnowStartHeight || height <= seaLevel || !sample.HasClimate)
+        {
+            return false;
+        }
+
+        return TerrainSamplerTemperatureCelsius(sample, height, seaLevel) < -10f;
     }
 
     private static float TerrainSamplerTemperatureCelsius(FastMapTerrainSamplerColumn sample, int height, int seaLevel)

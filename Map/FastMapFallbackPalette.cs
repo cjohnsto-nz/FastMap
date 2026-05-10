@@ -10,19 +10,28 @@ namespace FastMap.Map;
 internal sealed class FastMapFallbackPalette
 {
     private readonly int[] grass;
+    private readonly int[] dryGrass;
+    private readonly int[] lushGrass;
+    private readonly int[] trees;
     private readonly int[] water;
     private readonly int[] snow;
     private readonly int[] brown;
 
-    private FastMapFallbackPalette(int[] grass, int[] water, int[] snow, int[] brown)
+    private FastMapFallbackPalette(int[] grass, int[] dryGrass, int[] lushGrass, int[] trees, int[] water, int[] snow, int[] brown)
     {
         this.grass = grass;
+        this.dryGrass = dryGrass;
+        this.lushGrass = lushGrass;
+        this.trees = trees;
         this.water = water;
         this.snow = snow;
         this.brown = brown;
     }
 
     public bool HasGrass => grass.Length > 0;
+    public bool HasDryGrass => dryGrass.Length > 0;
+    public bool HasLushGrass => lushGrass.Length > 0;
+    public bool HasTrees => trees.Length > 0;
     public bool HasWater => water.Length > 0;
     public bool HasSnow => snow.Length > 0;
     public bool HasBrown => brown.Length > 0;
@@ -32,28 +41,43 @@ internal sealed class FastMapFallbackPalette
     {
         string assemblyDirectory = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location) ?? AppContext.BaseDirectory;
         int[] grass = LoadPalette(api, assemblyDirectory, "grass.png");
+        int[] dryGrass = LoadPalette(api, assemblyDirectory, "drygrass.png", warnIfMissing: false);
+        int[] lushGrass = LoadPalette(api, assemblyDirectory, "lushgrass.png", warnIfMissing: false);
+        int[] trees = LoadPalette(api, assemblyDirectory, "trees.png", warnIfMissing: false);
         int[] water = LoadPalette(api, assemblyDirectory, "water.png");
         int[] snow = LoadPalette(api, assemblyDirectory, "snow.png");
         int[] brown = LoadPalette(api, assemblyDirectory, "map-bkg.png", warnIfMissing: false);
 
         api.Logger.Notification(
-            "[FastMap] Terrain fallback palettes loaded: grass={0}, water={1}, snow={2}, brown={3}, path={4}",
+            "[FastMap] Terrain fallback palettes loaded: grass={0}, dryGrass={1}, lushGrass={2}, trees={3}, water={4}, snow={5}, brown={6}, path={7}",
             grass.Length,
+            dryGrass.Length,
+            lushGrass.Length,
+            trees.Length,
             water.Length,
             snow.Length,
             brown.Length,
             assemblyDirectory);
 
-        return new FastMapFallbackPalette(grass, water, snow, brown);
+        return new FastMapFallbackPalette(grass, dryGrass, lushGrass, trees, water, snow, brown);
     }
 
-    public bool TryGetColor(int height, int seaLevel, int snowStartHeight, int worldX, int worldZ, out int color, out bool flatten)
+    public bool TryGetColor(
+        int height,
+        int seaLevel,
+        bool useSnow,
+        float dryGrassWeight,
+        float lushGrassWeight,
+        int worldX,
+        int worldZ,
+        out int color,
+        out bool flatten)
     {
         int waterHeight = seaLevel - 2;
         flatten = height <= waterHeight;
         int[] palette = flatten
             ? water
-            : height >= snowStartHeight
+            : useSnow
                 ? snow
                 : grass;
 
@@ -66,7 +90,52 @@ internal sealed class FastMapFallbackPalette
 
         uint hash = Mix((uint)worldX, (uint)worldZ, (uint)height);
         color = palette[hash % (uint)palette.Length];
+        if (!flatten && !useSnow)
+        {
+            color = BlendGrassSpectrumColor(color, hash, dryGrassWeight, lushGrassWeight);
+        }
+
         return true;
+    }
+
+    private int BlendGrassSpectrumColor(int color, uint hash, float dryWeight, float lushWeight)
+    {
+        dryWeight = Math.Clamp(dryWeight, 0f, 1f);
+        lushWeight = Math.Clamp(lushWeight, 0f, 1f);
+        float total = dryWeight + lushWeight;
+        if (total <= 0.001f)
+        {
+            return color;
+        }
+
+        if (total > 1f)
+        {
+            dryWeight /= total;
+            lushWeight /= total;
+        }
+
+        if (dryGrass.Length > 0 && dryWeight > 0f)
+        {
+            int dryColor = dryGrass[(int)((hash >> 8) % (uint)dryGrass.Length)];
+            color = BlendColor(color, dryColor, dryWeight);
+        }
+
+        if (lushGrass.Length > 0 && lushWeight > 0f)
+        {
+            int lushColor = lushGrass[(int)((hash >> 16) % (uint)lushGrass.Length)];
+            color = BlendColor(color, lushColor, lushWeight);
+        }
+
+        return color;
+    }
+
+    private static int BlendColor(int from, int to, float weight)
+    {
+        weight = Math.Clamp(weight, 0f, 1f);
+        int r = (int)MathF.Round((from & 0xFF) + ((to & 0xFF) - (from & 0xFF)) * weight);
+        int g = (int)MathF.Round(((from >> 8) & 0xFF) + (((to >> 8) & 0xFF) - ((from >> 8) & 0xFF)) * weight);
+        int b = (int)MathF.Round(((from >> 16) & 0xFF) + (((to >> 16) & 0xFF) - ((from >> 16) & 0xFF)) * weight);
+        return unchecked((int)0xFF000000) | (b << 16) | (g << 8) | r;
     }
 
     public bool TryGetSnowColor(int height, int worldX, int worldZ, out int color)
@@ -92,6 +161,19 @@ internal sealed class FastMapFallbackPalette
 
         uint hash = Mix((uint)worldX, (uint)worldZ, (uint)height);
         color = brown[hash % (uint)brown.Length];
+        return true;
+    }
+
+    public bool TryGetTreeColor(int height, int worldX, int worldZ, uint salt, out int color)
+    {
+        if (trees.Length == 0)
+        {
+            color = 0;
+            return false;
+        }
+
+        uint hash = Mix((uint)worldX ^ salt, (uint)worldZ, (uint)height);
+        color = trees[hash % (uint)trees.Length];
         return true;
     }
 
