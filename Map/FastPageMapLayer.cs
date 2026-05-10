@@ -229,6 +229,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         capi = (ICoreClientAPI)api;
         config = FastMapModSystem.Instance?.Config ?? new FastMapConfig();
         config.Normalize();
+        RefreshColorAccurateMode();
         nativeDbPageBuildSemaphore = new SemaphoreSlim(config.MaxParallelNativeDbPageBuilds);
         pageDiskCache = new FastMapPageDiskCache(api.World.SavegameIdentifier, config.EnableCompressedCache, config.UseFilteredCache, config.UseHighCompressionCache);
         terrainFallbackDiskCache = new FastMapTerrainFallbackDiskCache(
@@ -264,26 +265,33 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private string NormalFallbackCacheVariant()
     {
         string palette = config.UseBrownTerrainFallbackPalette ? "brown" : "vanilla";
-        return "normal-" + palette + "-v11-h" + config.TerrainSamplerFallbackSnowStartHeight;
+        return "normal-" + palette + "-v12-h" + config.TerrainSamplerFallbackSnowStartHeight;
     }
 
     private string TrueColorFallbackCacheVariant()
     {
         string palette = config.UseBrownTerrainFallbackPalette ? "brown" : "palette";
-        return "truecolour-" + palette + "-v10-h" + config.TerrainSamplerFallbackSnowStartHeight;
+        return "truecolour-" + palette + "-v11-h" + config.TerrainSamplerFallbackSnowStartHeight;
     }
 
     public override void OnLoaded()
     {
+        RefreshColorAccurateMode();
         chunksTmp = new IWorldChunk[Math.Max(1, api.World.BlockAccessor.MapSizeY / ChunkSize)];
         BuildColorLookup();
     }
 
     public override void OnMapOpenedClient()
     {
-        colorAccurate = api.World.Config.GetAsBool("colorAccurateWorldmap", false)
-            || Array.IndexOf(capi.World.Player.Privileges, "colorAccurateWorldmap") >= 0;
+        RefreshColorAccurateMode();
         colorRandomizationWeight = (float)api.World.Config.GetDecimal("colorRandomizationWeight", 0.6000000238418579);
+    }
+
+    private void RefreshColorAccurateMode()
+    {
+        string[] privileges = capi.World.Player?.Privileges ?? Array.Empty<string>();
+        colorAccurate = api.World.Config.GetAsBool("colorAccurateWorldmap", false)
+            || Array.IndexOf(privileges, "colorAccurateWorldmap") >= 0;
     }
 
     public override void OnMapClosedClient()
@@ -1717,6 +1725,10 @@ public sealed class FastPageMapLayer : RGBMapLayer
         long trueColorProbes = 0;
         long trueColorHits = 0;
         long trueColorMisses = 0;
+        if (colorAccurate && !usePaletteFallback && !useBrownFallback)
+        {
+            return false;
+        }
 
         for (int cellZ = 0; cellZ < cellsPerAxis; cellZ++)
         {
@@ -1790,7 +1802,15 @@ public sealed class FastPageMapLayer : RGBMapLayer
                     {
                         color = flattenPaletteColor
                             ? paletteColor
-                            : TerrainSamplerShadeColor(paletteColor, height, westHeight, northHeight, diagonalHeight, seaLevel);
+                            : paletteSnow
+                                ? TerrainSamplerShadeSnowColor(
+                                    PushSnowColorTowardVanillaTarget(paletteColor),
+                                    height,
+                                    westHeight,
+                                    northHeight,
+                                    diagonalHeight,
+                                    seaLevel)
+                                : TerrainSamplerShadeColor(paletteColor, height, westHeight, northHeight, diagonalHeight, seaLevel);
                     }
                 }
                 else
@@ -2247,7 +2267,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private static int PushSnowColorTowardVanillaTarget(int color)
     {
         const int targetSnowColor = unchecked((int)0xFFC0E0E0); // #e0e0c0 in Vintage Story's 0xAABBGGRR map color order.
-        return BlendFallbackBrownColor(color, targetSnowColor, 0.75f);
+        int targetHueColor = BlendFallbackBrownColor(color, targetSnowColor, 0.75f);
+        return ColorUtil.ColorMultiply3Clamped(targetHueColor, 0.86f) | unchecked((int)0xFF000000);
     }
 
     private static int TerrainSamplerShadeSnowColor(int color, int height, int westHeight, int northHeight, int diagonalHeight, int seaLevel)

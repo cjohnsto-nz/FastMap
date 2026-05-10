@@ -7,16 +7,18 @@ namespace FastMap.Map;
 
 public sealed class FastMapTerrainFallbackLayer : MapLayer
 {
-    private const string SettingKey = "fastmapShowTerrainFallbackLayer";
+    private const string SettingKeyPrefix = "fastmapShowTerrainFallbackLayer:";
     private static int active;
     private readonly ICoreClientAPI capi;
+    private readonly string settingKey;
     private bool persistedActive;
 
     public FastMapTerrainFallbackLayer(ICoreAPI api, IWorldMapManager mapSink)
         : base(api, mapSink)
     {
         capi = (ICoreClientAPI)api;
-        persistedActive = capi.Settings.Bool.Exists(SettingKey) && capi.Settings.Bool[SettingKey];
+        settingKey = SettingKeyPrefix + api.World.SavegameIdentifier;
+        persistedActive = capi.Settings.Bool.Exists(settingKey) && capi.Settings.Bool[settingKey];
         Active = persistedActive;
         PublishActiveState();
     }
@@ -61,7 +63,7 @@ public sealed class FastMapTerrainFallbackLayer : MapLayer
         }
 
         persistedActive = Active;
-        capi.Settings.Bool.Set(SettingKey, Active, false);
+        capi.Settings.Bool.Set(settingKey, Active, false);
     }
 
     private void PublishActiveState()
