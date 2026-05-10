@@ -22,6 +22,11 @@ public sealed class FastMapConfig
     public int TerrainSamplerFallbackTrueColorProbeStride { get; set; } = 4;
     public int TerrainSamplerFallbackSnowStartHeight { get; set; } = 250;
     public int TerrainSamplerFallbackSeasonUploadBucketsPerYear { get; set; } = 12;
+    public string TerrainSamplerFallbackWaterBaseColor { get; set; } = "#0d3f37";
+    public float TerrainSamplerFallbackWaterClimateInputStrength { get; set; } = 1.0f;
+    public float TerrainSamplerFallbackWaterClimateStrength { get; set; } = 0.2f;
+    public float TerrainSamplerFallbackWaterNoiseStrength { get; set; } = 0.1f;
+    public float TerrainSamplerFallbackWaterHeightShadeStrength { get; set; } = 0.5f;
     public bool UseBrownTerrainFallbackPalette { get; set; } = false;
     public bool EnableTrueColorAirSurfaceRepair { get; set; } = true;
     public int TrueColorAirSurfaceRepairDepth { get; set; } = 32;
@@ -95,6 +100,13 @@ public sealed class FastMapConfig
         TerrainSamplerFallbackTrueColorProbeStride = Math.Clamp(TerrainSamplerFallbackTrueColorProbeStride, 1, 32);
         TerrainSamplerFallbackSnowStartHeight = Math.Clamp(TerrainSamplerFallbackSnowStartHeight, 1, 100000);
         TerrainSamplerFallbackSeasonUploadBucketsPerYear = Math.Clamp(TerrainSamplerFallbackSeasonUploadBucketsPerYear, 1, 128);
+        TerrainSamplerFallbackWaterBaseColor = string.IsNullOrWhiteSpace(TerrainSamplerFallbackWaterBaseColor)
+            ? "#103d32"
+            : TerrainSamplerFallbackWaterBaseColor.Trim();
+        TerrainSamplerFallbackWaterClimateInputStrength = Math.Clamp(TerrainSamplerFallbackWaterClimateInputStrength, 0f, 2f);
+        TerrainSamplerFallbackWaterClimateStrength = Math.Clamp(TerrainSamplerFallbackWaterClimateStrength, 0f, 2f);
+        TerrainSamplerFallbackWaterNoiseStrength = Math.Clamp(TerrainSamplerFallbackWaterNoiseStrength, 0f, 1f);
+        TerrainSamplerFallbackWaterHeightShadeStrength = Math.Clamp(TerrainSamplerFallbackWaterHeightShadeStrength, 0f, 2f);
         TrueColorAirSurfaceRepairDepth = Math.Clamp(TrueColorAirSurfaceRepairDepth, 1, 64);
         TerrainSamplerFallbackMaxPagesPerSession = Math.Clamp(TerrainSamplerFallbackMaxPagesPerSession, 0, 100000);
         TerrainSamplerFallbackRadiusChunks = Math.Clamp(TerrainSamplerFallbackRadiusChunks, 0, 8192);

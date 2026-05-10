@@ -207,6 +207,66 @@
       }
     },
     {
+      "code": "TerrainSamplerFallbackWaterBaseColor",
+      "type": "text",
+      "default": "#103d32",
+      "clientSide": true,
+      "ingui": "Fallback water base colour",
+      "comment": "Base #RRGGBB colour used for synthetic Pregen water before climate tint, value noise, and height shading are applied."
+    },
+    {
+      "code": "TerrainSamplerFallbackWaterClimateInputStrength",
+      "type": "float",
+      "default": 1.0,
+      "clientSide": true,
+      "ingui": "Fallback water climate input",
+      "comment": "How strongly rainfall and adjusted temperature move away from neutral before sampling Vintage Story's water tint map. 0 ignores climate position; 1 uses the raw sampled climate; 2 exaggerates it.",
+      "range": {
+        "min": 0.0,
+        "max": 2.0,
+        "step": 0.05
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackWaterClimateStrength",
+      "type": "float",
+      "default": 1.0,
+      "clientSide": true,
+      "ingui": "Fallback water climate strength",
+      "comment": "How strongly the sampled water tint delta is applied to the base water colour. 0 disables climate tint; 1 applies the current full delta; 2 exaggerates it.",
+      "range": {
+        "min": 0.0,
+        "max": 2.0,
+        "step": 0.05
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackWaterNoiseStrength",
+      "type": "float",
+      "default": 0.25,
+      "clientSide": true,
+      "ingui": "Fallback water noise",
+      "comment": "Strength of subtle value noise and sampled water texture variation applied to synthetic Pregen water. 0 is perfectly flat.",
+      "range": {
+        "min": 0.0,
+        "max": 1.0,
+        "step": 0.01
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackWaterHeightShadeStrength",
+      "type": "float",
+      "default": 0.75,
+      "clientSide": true,
+      "ingui": "Fallback water height shading",
+      "comment": "Strength of the vanilla-style height/shadow pass on synthetic Pregen water. 0 disables height shading; 1 applies the full current shade pass; 2 exaggerates it.",
+      "range": {
+        "min": 0.0,
+        "max": 2.0,
+        "step": 0.05
+      }
+    },
+    {
       "code": "UseBrownTerrainFallbackPalette",
       "type": "boolean",
       "default": true,

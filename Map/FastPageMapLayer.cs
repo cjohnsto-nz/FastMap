@@ -242,7 +242,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
             config.TerrainSamplerFallbackResolutionScale,
             config.UseHighCompressionCache,
             TrueColorFallbackCacheVariant());
-        fallbackPalette = FastMapFallbackPalette.Load(api);
+        fallbackPalette = FastMapFallbackPalette.Load(api, config);
         textureAtlas = config.EnableTextureAtlas ? new FastMapTextureAtlas(capi, FastMapPageComponent.PageSize) : null;
         fallbackTextureAtlas = config.EnableTextureAtlas
             ? new FastMapTextureAtlas(capi, FastMapTerrainFallbackDiskCache.LowResolutionSize(config.TerrainSamplerFallbackResolutionScale))
@@ -1712,9 +1712,9 @@ public sealed class FastPageMapLayer : RGBMapLayer
         int landColor = fallbackLandColor;
         int waterColor = colorsByCode.TryGetValue("ocean", out int ocean) ? ocean : landColor;
         int waterEdgeColor = colorsByCode.TryGetValue("wateredge", out int edge) ? edge : waterColor;
-        int[]? previousRow = null;
-        int[] currentRow = new int[cellsPerAxis];
         lowResolutionPixels = new int[cellsPerAxis * cellsPerAxis];
+        FastMapTerrainSamplerColumn[] terrainSamples = new FastMapTerrainSamplerColumn[lowResolutionPixels.Length];
+        int[] heights = new int[lowResolutionPixels.Length];
         bool usePaletteFallback = colorAccurate && config.EnableTerrainSamplerFallbackTrueColor;
         bool useBrownFallback = config.UseBrownTerrainFallbackPalette;
         bool useTrueColorProbes = false;
@@ -1732,6 +1732,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
             return false;
         }
 
+        long waterDepthSum = 0;
+        int waterDepthSamples = 0;
         for (int cellZ = 0; cellZ < cellsPerAxis; cellZ++)
         {
             if (disposed)
@@ -1752,7 +1754,9 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 int worldX = baseBlockX + localX;
                 FastMapTerrainSamplerColumn terrainSample = sampler.SampleColumn(worldX, worldZ);
                 int height = terrainSample.Height;
-                currentRow[cellX] = height;
+                int sampleIndex = cellZ * cellsPerAxis + cellX;
+                terrainSamples[sampleIndex] = terrainSample;
+                heights[sampleIndex] = height;
                 if (height <= seaLevel)
                 {
                     seaSamples++;
@@ -1762,10 +1766,43 @@ public sealed class FastPageMapLayer : RGBMapLayer
                     nearSeaSamples++;
                 }
 
-                int westHeight = cellX > 0 ? currentRow[cellX - 1] : sampler.GetBlockColumnHeight(worldX - sampleStep, worldZ);
-                int northHeight = previousRow != null ? previousRow[cellX] : sampler.GetBlockColumnHeight(worldX, worldZ - sampleStep);
-                int diagonalHeight = cellX > 0 && previousRow != null
-                    ? previousRow[cellX - 1]
+                if (height <= seaLevel - 2)
+                {
+                    waterDepthSum += seaLevel - height;
+                    waterDepthSamples++;
+                }
+            }
+        }
+
+        float averageWaterDepth = waterDepthSamples > 0
+            ? waterDepthSum / (float)waterDepthSamples
+            : 0f;
+
+        for (int cellZ = 0; cellZ < cellsPerAxis; cellZ++)
+        {
+            if (disposed)
+            {
+                return false;
+            }
+
+            int localZ = cellZ * sampleStep;
+            int worldZ = baseBlockZ + localZ;
+            for (int cellX = 0; cellX < cellsPerAxis; cellX++)
+            {
+                if (disposed)
+                {
+                    return false;
+                }
+
+                int localX = cellX * sampleStep;
+                int worldX = baseBlockX + localX;
+                int sampleIndex = cellZ * cellsPerAxis + cellX;
+                FastMapTerrainSamplerColumn terrainSample = terrainSamples[sampleIndex];
+                int height = heights[sampleIndex];
+                int westHeight = cellX > 0 ? heights[sampleIndex - 1] : sampler.GetBlockColumnHeight(worldX - sampleStep, worldZ);
+                int northHeight = cellZ > 0 ? heights[sampleIndex - cellsPerAxis] : sampler.GetBlockColumnHeight(worldX, worldZ - sampleStep);
+                int diagonalHeight = cellX > 0 && cellZ > 0
+                    ? heights[sampleIndex - cellsPerAxis - 1]
                     : sampler.GetBlockColumnHeight(worldX - sampleStep, worldZ - sampleStep);
 
                 int color;
@@ -1802,6 +1839,31 @@ public sealed class FastPageMapLayer : RGBMapLayer
                     }
                     else
                     {
+                        if (flattenPaletteColor && terrainSample.HasClimate)
+                        {
+                            int adjustedTemperature = Climate.GetAdjustedTemperature(
+                                TerrainSamplerUnscaledTemperature(terrainSample),
+                                height - seaLevel);
+                            paletteColor = fallbackPalette.ClimateTintWaterColor(
+                                paletteColor,
+                                TerrainSamplerUnscaledRainfall(terrainSample),
+                                adjustedTemperature,
+                                colorRandomizationWeight,
+                                worldX,
+                                worldZ,
+                                height);
+                        }
+
+                        if (flattenPaletteColor)
+                        {
+                            paletteColor = TerrainSamplerShadeWaterColor(
+                                paletteColor,
+                                height,
+                                seaLevel,
+                                averageWaterDepth,
+                                config.TerrainSamplerFallbackWaterHeightShadeStrength);
+                        }
+
                         color = flattenPaletteColor
                             ? paletteColor
                             : paletteSnow
@@ -1845,10 +1907,6 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
                 lowResolutionPixels[cellZ * cellsPerAxis + cellX] = color;
             }
-
-            int[] completedRow = currentRow;
-            currentRow = previousRow ?? new int[cellsPerAxis];
-            previousRow = completedRow;
         }
 
         Interlocked.Add(ref terrainSamplerFallbackSamples, cellsPerAxis * cellsPerAxis);
@@ -2010,6 +2068,15 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 ? 0.96f - relief * 0.35f + altitude * 0.5f
                 : 1f + altitude * 0.75f;
 
+        return ColorUtil.ColorMultiply3Clamped(color, shade) | unchecked((int)0xFF000000);
+    }
+
+    private static int TerrainSamplerShadeWaterColor(int color, int height, int seaLevel, float averageWaterDepth, float strength)
+    {
+        float localDepth = Math.Max(0f, seaLevel - height);
+        float softDepth = averageWaterDepth * 0.9f + localDepth * 0.1f;
+        float depthSignal = Math.Clamp((16f - softDepth) / 160f, -0.08f, 0.08f);
+        float shade = Math.Clamp(1f + depthSignal * Math.Clamp(strength, 0f, 2f), 0.84f, 1.16f);
         return ColorUtil.ColorMultiply3Clamped(color, shade) | unchecked((int)0xFF000000);
     }
 
