@@ -271,7 +271,26 @@ public sealed class FastPageMapLayer : RGBMapLayer
             ? trueColorTerrainFallbackDiskCache
             : normalTerrainFallbackDiskCache;
 
+    private TerrainFallbackMode CurrentTerrainFallbackMode => new(
+        FastMapTerrainFallbackLayer.UseFogOfWarStyle,
+        !FastMapTerrainFallbackLayer.UseFogOfWarStyle && colorAccurate && config.EnableTerrainSamplerFallbackTrueColor,
+        FastMapTerrainFallbackLayer.GenerationModeVersion);
+
+    private FastMapTerrainFallbackDiskCache DiskCacheForMode(TerrainFallbackMode mode)
+    {
+        if (mode.UseFogOfWar)
+        {
+            return brownTerrainFallbackDiskCache;
+        }
+
+        return mode.UseTrueColorPalette
+            ? trueColorTerrainFallbackDiskCache
+            : normalTerrainFallbackDiskCache;
+    }
+
     private static bool TerrainFallbackLayerActive => FastMapTerrainFallbackLayer.IsFallbackLayerActive;
+
+    private readonly record struct TerrainFallbackMode(bool UseFogOfWar, bool UseTrueColorPalette, int Version);
 
     public override void OnLoaded()
     {
@@ -1476,10 +1495,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
 
         Stopwatch stopwatch = Stopwatch.StartNew();
-        FastMapTerrainFallbackDiskCache fallbackDiskCache = CurrentTerrainFallbackDiskCache;
+        TerrainFallbackMode mode = CurrentTerrainFallbackMode;
+        FastMapTerrainFallbackDiskCache fallbackDiskCache = DiskCacheForMode(mode);
         if (fallbackDiskCache.MightContain(pageKey) && fallbackDiskCache.TryLoad(pageKey, out FastMapPageSnapshot cachedSnapshot))
         {
-            if (!disposed)
+            if (!disposed && mode.Version == FastMapTerrainFallbackLayer.GenerationModeVersion)
             {
                 Interlocked.Increment(ref terrainSamplerFallbackPages);
                 Interlocked.Increment(ref terrainSamplerFallbackCacheHits);
@@ -1507,7 +1527,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
             return;
         }
 
-        if (!TryBuildPageFromTerrainSampler(pageKey, out FastMapPageSnapshot sampledSnapshot))
+        if (!TryBuildPageFromTerrainSampler(pageKey, mode, fallbackDiskCache, out FastMapPageSnapshot sampledSnapshot))
         {
             Interlocked.Increment(ref terrainSamplerFallbackBuildFailures);
             RetryOrFinishTerrainSamplerLoad(pageKey);
@@ -1515,6 +1535,12 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
 
         if (disposed)
+        {
+            FinishTerrainSamplerLoad(pageKey);
+            return;
+        }
+
+        if (mode.Version != FastMapTerrainFallbackLayer.GenerationModeVersion)
         {
             FinishTerrainSamplerLoad(pageKey);
             return;
@@ -1536,7 +1562,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void ProcessTerrainFallbackCacheLoad(FastVec2i pageKey)
     {
-        FastMapTerrainFallbackDiskCache fallbackDiskCache = CurrentTerrainFallbackDiskCache;
+        TerrainFallbackMode mode = CurrentTerrainFallbackMode;
+        FastMapTerrainFallbackDiskCache fallbackDiskCache = DiskCacheForMode(mode);
         if (disposed || !ShouldRetainQueuedPageWork(pageKey) || !fallbackDiskCache.MightContain(pageKey))
         {
             return;
@@ -1556,7 +1583,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
             return;
         }
 
-        if (disposed)
+        if (disposed || mode.Version != FastMapTerrainFallbackLayer.GenerationModeVersion)
         {
             return;
         }
@@ -1662,7 +1689,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
         Duplicate
     }
 
-    private bool TryBuildPageFromTerrainSampler(FastVec2i pageKey, out FastMapPageSnapshot snapshot)
+    private bool TryBuildPageFromTerrainSampler(
+        FastVec2i pageKey,
+        TerrainFallbackMode mode,
+        FastMapTerrainFallbackDiskCache fallbackDiskCache,
+        out FastMapPageSnapshot snapshot)
     {
         snapshot = null!;
         if (!ShouldQueueTerrainSamplerLoad(pageKey))
@@ -1690,17 +1721,21 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 sampler.HasColumnSamples ? "height+climate" : "height-only");
         }
 
-        if (!TryBuildTerrainSamplerPage(pageKey, sampler, out int[] lowResolutionPixels))
+        if (!TryBuildTerrainSamplerPage(pageKey, sampler, mode, out int[] lowResolutionPixels))
         {
             return false;
         }
 
-        CurrentTerrainFallbackDiskCache.Save(pageKey, lowResolutionPixels);
+        fallbackDiskCache.Save(pageKey, lowResolutionPixels);
         snapshot = FastMapTerrainFallbackDiskCache.CreateSnapshot(pageKey, lowResolutionPixels, config.TerrainSamplerFallbackResolutionScale);
         return true;
     }
 
-    private bool TryBuildTerrainSamplerPage(FastVec2i pageKey, FastMapTerrainSamplerAdapter sampler, out int[] lowResolutionPixels)
+    private bool TryBuildTerrainSamplerPage(
+        FastVec2i pageKey,
+        FastMapTerrainSamplerAdapter sampler,
+        TerrainFallbackMode mode,
+        out int[] lowResolutionPixels)
     {
         int sampleStep = config.TerrainSamplerFallbackResolutionScale;
         int pageSize = FastMapPageComponent.PageSize;
@@ -1714,8 +1749,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
         lowResolutionPixels = new int[cellsPerAxis * cellsPerAxis];
         FastMapTerrainSamplerColumn[] terrainSamples = new FastMapTerrainSamplerColumn[lowResolutionPixels.Length];
         int[] heights = new int[lowResolutionPixels.Length];
-        bool usePaletteFallback = colorAccurate && config.EnableTerrainSamplerFallbackTrueColor;
-        bool useBrownFallback = FastMapTerrainFallbackLayer.UseFogOfWarStyle;
+        bool usePaletteFallback = mode.UseTrueColorPalette;
+        bool useBrownFallback = mode.UseFogOfWar;
         bool useTrueColorProbes = false;
         int trueColorProbeStride = Math.Max(1, config.TerrainSamplerFallbackTrueColorProbeStride);
         int trueColorProbeCellsPerAxis = useTrueColorProbes ? (cellsPerAxis + trueColorProbeStride - 1) / trueColorProbeStride : 0;

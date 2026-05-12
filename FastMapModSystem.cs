@@ -271,7 +271,7 @@ public sealed class FastMapModSystem : ModSystem
         SyncTerrainSamplerOverlayLayer<FastMapTerrainFallbackLayer>(
             worldMapManager,
             "fastmap-terrain-fallback",
-            0.19,
+            2.0,
             enabled: terrainSamplerAvailable,
             recreateExisting);
         SyncTerrainSamplerOverlayLayer<FastMapRainfallLayer>(
