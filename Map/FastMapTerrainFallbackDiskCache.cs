@@ -2,8 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
+using FastMap.Cache;
 using K4os.Compression.LZ4;
-using Vintagestory.API.Config;
 using Vintagestory.API.MathTools;
 
 namespace FastMap.Map;
@@ -24,12 +24,12 @@ internal sealed class FastMapTerrainFallbackDiskCache
     {
         this.resolutionScale = Math.Clamp(resolutionScale, 1, 32);
         this.useHighCompression = useHighCompression;
-        string worldPath = Path.Combine(GamePaths.DataPath, "FastMap", SanitizePathPart(savegameIdentifier));
+        string worldPath = FastMapStoragePaths.GetWorldPath(savegameIdentifier);
         string folderName = string.IsNullOrWhiteSpace(variant)
             ? $"terrain-fallback-v1-r{this.resolutionScale}"
-            : $"terrain-fallback-v1-r{this.resolutionScale}-{SanitizePathPart(variant)}";
+            : $"terrain-fallback-v1-r{this.resolutionScale}-{FastMapStoragePaths.SanitizePathPart(variant)}";
         rootPath = Path.Combine(worldPath, folderName);
-        GamePaths.EnsurePathExists(rootPath);
+        Directory.CreateDirectory(rootPath);
         IndexExistingPages();
     }
 
@@ -235,19 +235,4 @@ internal sealed class FastMapTerrainFallbackDiskCache
         return true;
     }
 
-    private static string SanitizePathPart(string value)
-    {
-        char[] invalid = Path.GetInvalidFileNameChars();
-        char[] chars = value.ToCharArray();
-
-        for (int i = 0; i < chars.Length; i++)
-        {
-            if (Array.IndexOf(invalid, chars[i]) >= 0)
-            {
-                chars[i] = '_';
-            }
-        }
-
-        return new string(chars);
-    }
 }

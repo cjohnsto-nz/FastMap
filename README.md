@@ -4,7 +4,7 @@ Fast Map replaces Vintage Story's vanilla terrain map layer with a client-side p
 
 ## How It Works
 
-Fast Map watches the same map tile data the vanilla world map uses, but groups explored terrain into larger page textures. Those pages are uploaded into GPU atlas textures for rendering and written to disk under `VintagestoryData/FastMap/<world-id>/pages-v2`.
+Fast Map watches the same map tile data the vanilla world map uses, but groups explored terrain into larger page textures. Those pages are uploaded into GPU atlas textures for rendering and written to disk under `VintagestoryData/ModData/FastMap/<world-id>/pages-v2`.
 
 On later sessions, Fast Map loads those page textures from disk instead of asking the vanilla map database and chunk-map generator to rebuild every visible tile again. Newly discovered or changed chunks are patched into the page cache and saved back to disk.
 
@@ -18,7 +18,8 @@ Optional LZ4HC writes can reduce cache size further at the cost of more CPU whil
 - It respects vanilla fog-of-war semantics: cached terrain only exists for map chunks the client has map data for.
 - The first visit to an area still needs map pixels to exist or be generated. The win is that those pixels are then reused instead of regenerated every time.
 - Fast Map uses GPU texture atlases by default to reduce texture object churn when many cached pages are visible.
-- Cached page files use a sparse LZ4-compressed format by default, but very large explored worlds can still use noticeable disk space. Removing the `VintagestoryData/FastMap/<world-id>` folder resets Fast Map's cache for that world.
+- Cached page files use a sparse LZ4-compressed format by default, but very large explored worlds can still use noticeable disk space. Removing the `VintagestoryData/ModData/FastMap/<world-id>` folder resets Fast Map's cache for that world.
+- Existing cache data from older Fast Map builds is migrated automatically from `VintagestoryData/FastMap` to `VintagestoryData/ModData/FastMap` on startup.
 - Config Lib is supported. If Config Lib is installed, Fast Map settings are available in the in-game mod settings UI.
 - Most settings apply by recreating the Fast Map terrain layer after saving the config. This reloads visible page textures from disk but does not erase the persistent cache.
 

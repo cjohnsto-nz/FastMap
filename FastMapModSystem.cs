@@ -23,6 +23,8 @@ public sealed class FastMapModSystem : ModSystem
 
     private ICoreClientAPI? capi;
     private Action? levelFinalizeHandler;
+    private bool terrainSamplerUnavailableLogged;
+    private bool terrainSamplerAvailableLogged;
 #if FASTMAPHITCHDIAGNOSTICS
     private long hitchDiagnosticListenerId;
     private long lastHitchTickTimestamp;
@@ -45,6 +47,7 @@ public sealed class FastMapModSystem : ModSystem
         capi = api;
         Instance = this;
         Config = FastMapConfig.Load(api);
+        FastMapStoragePaths.MigrateLegacyRootIfNeeded(api);
         RegisterConfigReloadListeners(api);
         RegisterClientCommands(api);
 #if FASTMAPHITCHDIAGNOSTICS
@@ -264,36 +267,60 @@ public sealed class FastMapModSystem : ModSystem
             return;
         }
 
+        bool terrainSamplerAvailable = IsTerrainSamplerIntegrationAvailable();
         SyncTerrainSamplerOverlayLayer<FastMapTerrainFallbackLayer>(
             worldMapManager,
             "fastmap-terrain-fallback",
             0.19,
-            enabled: true,
+            enabled: terrainSamplerAvailable,
             recreateExisting);
         SyncTerrainSamplerOverlayLayer<FastMapRainfallLayer>(
             worldMapManager,
             "fastmap-rainfall",
             0.15,
-            Config.EnableTerrainSamplerRainfallLayer,
+            terrainSamplerAvailable && Config.EnableTerrainSamplerRainfallLayer,
             recreateExisting);
         SyncTerrainSamplerOverlayLayer<FastMapTemperatureLayer>(
             worldMapManager,
             "fastmap-temperature",
             0.16,
-            Config.EnableTerrainSamplerTemperatureLayer,
+            terrainSamplerAvailable && Config.EnableTerrainSamplerTemperatureLayer,
             recreateExisting);
         SyncTerrainSamplerOverlayLayer<FastMapForestDensityLayer>(
             worldMapManager,
             "fastmap-forest-density",
             0.17,
-            Config.EnableTerrainSamplerForestDensityLayer,
+            terrainSamplerAvailable && Config.EnableTerrainSamplerForestDensityLayer,
             recreateExisting);
         SyncTerrainSamplerOverlayLayer<FastMapShrubDensityLayer>(
             worldMapManager,
             "fastmap-shrub-density",
             0.18,
-            Config.EnableTerrainSamplerShrubDensityLayer,
+            terrainSamplerAvailable && Config.EnableTerrainSamplerShrubDensityLayer,
             recreateExisting);
+    }
+
+    private bool IsTerrainSamplerIntegrationAvailable()
+    {
+        bool available = FastMapTerrainSamplerAdapter.TryCreate() != null;
+        if (available)
+        {
+            if (!terrainSamplerAvailableLogged)
+            {
+                capi?.Logger.Notification("[FastMap] Terrain Sampler integration detected; Pregen and sampler overlay map layers are available.");
+                terrainSamplerAvailableLogged = true;
+            }
+
+            return true;
+        }
+
+        if (!terrainSamplerUnavailableLogged)
+        {
+            capi?.Logger.Notification("[FastMap] Terrain Sampler integration not detected; Pregen and sampler overlay map layers are hidden.");
+            terrainSamplerUnavailableLogged = true;
+        }
+
+        return false;
     }
 
     private void SyncTerrainSamplerOverlayLayer<T>(

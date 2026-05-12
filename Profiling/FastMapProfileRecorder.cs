@@ -6,9 +6,9 @@ using System.Globalization;
 using System.IO;
 using System.Text;
 using System.Threading;
+using FastMap.Cache;
 using FastMap.Config;
 using Vintagestory.API.Common;
-using Vintagestory.API.Config;
 
 namespace FastMap.Profiling;
 
@@ -145,9 +145,8 @@ public static class FastMapProfileRecorder
         {
             this.api = api;
             Side = side;
-            string saveId = SanitizePathPart(api.World?.SavegameIdentifier ?? "unknown-world");
             string timestamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
-            string directory = Path.Combine(GamePaths.DataPath, "FastMap", "profiles", saveId);
+            string directory = FastMapStoragePaths.GetProfilesPath(api.World?.SavegameIdentifier ?? "unknown-world");
             Directory.CreateDirectory(directory);
             FilePath = Path.Combine(directory, "fastmap-profile-" + side + "-" + timestamp + ".csv");
             writer = new StreamWriter(new FileStream(FilePath, FileMode.Create, FileAccess.Write, FileShare.Read), Encoding.UTF8);
@@ -222,16 +221,6 @@ public static class FastMapProfileRecorder
         private static string Csv(string value)
         {
             return "\"" + value.Replace("\"", "\"\"") + "\"";
-        }
-
-        private static string SanitizePathPart(string value)
-        {
-            foreach (char invalidChar in Path.GetInvalidFileNameChars())
-            {
-                value = value.Replace(invalidChar, '_');
-            }
-
-            return string.IsNullOrWhiteSpace(value) ? "unknown-world" : value;
         }
     }
 }

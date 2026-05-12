@@ -256,7 +256,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
     }
 
     private FastMapTerrainFallbackDiskCache CurrentTerrainFallbackDiskCache =>
-        colorAccurate && config.EnableTerrainSamplerFallbackTrueColor
+        !config.UseBrownTerrainFallbackPalette && colorAccurate && config.EnableTerrainSamplerFallbackTrueColor
             ? trueColorTerrainFallbackDiskCache
             : terrainFallbackDiskCache;
 
@@ -1798,7 +1798,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 if (useBrownFallback && fallbackPalette.TryGetBrownColor(height, worldX, worldZ, out int brownColor))
                 {
                     bool flattenBrownColor = height <= seaLevel - 2;
-                    int brownFallbackColor = TrueColorFallbackBrownColor(brownColor, height, seaLevel, worldX, worldZ, flattenBrownColor);
+                    int brownFallbackColor = TerrainSamplerFallbackBrownColor(brownColor, height, seaLevel, worldX, worldZ, flattenBrownColor);
                     brownFallbackColor = TerrainSamplerBrownClimateTintColor(brownFallbackColor, terrainSample, flattenBrownColor, seaLevel);
                     color = flattenBrownColor
                         ? brownFallbackColor
@@ -2052,7 +2052,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         return ColorUtil.ColorMultiply3Clamped(color, shade) | unchecked((int)0xFF000000);
     }
 
-    private static int TrueColorFallbackBrownColor(int color, int height, int seaLevel, int worldX, int worldZ, bool water)
+    private static int TerrainSamplerFallbackBrownColor(int color, int height, int seaLevel, int worldX, int worldZ, bool water)
     {
         uint hash = MixFallbackNoise((uint)worldX, (uint)worldZ, (uint)height);
         float contrast = water ? 1.0f : 1.04f;
@@ -5200,15 +5200,34 @@ public sealed class FastPageMapLayer : RGBMapLayer
         try
         {
             int color = block.GetColor(capi, blockPos);
-            int randomColor = block.GetRandomColor(capi, blockPos, BlockFacing.UP, GameMath.MurmurHash3Mod(blockPos.X, blockPos.Y, blockPos.Z, 30));
-            randomColor = ((randomColor & 0xFF) << 16) | (((randomColor >> 8) & 0xFF) << 8) | ((randomColor >> 16) & 0xFF);
+            int randomColor;
+            try
+            {
+                randomColor = block.GetRandomColor(capi, blockPos, BlockFacing.UP, GameMath.MurmurHash3Mod(blockPos.X, blockPos.Y, blockPos.Z, 30));
+                randomColor = ((randomColor & 0xFF) << 16) | (((randomColor >> 8) & 0xFF) << 8) | ((randomColor >> 16) & 0xFF);
+            }
+            catch (Exception ex)
+            {
+                LogColorAccurateFallback(block, blockId, blockPos, chunkPos, ex, "random colour");
+                randomColor = color;
+            }
+
             int finalColor = ColorUtil.ColorOverlay(color, randomColor, colorRandomizationWeight);
             LogTrueColorBrightSampleIfNeeded(block, blockId, blockPos, color, randomColor, finalColor);
             return finalColor;
         }
         catch (Exception ex)
         {
-            string blockCode = block.Code?.ToShortString() ?? blockId.ToString();
+            LogColorAccurateFallback(block, blockId, blockPos, chunkPos, ex, "base colour");
+            return GetMapColor(blockId);
+        }
+    }
+
+    private void LogColorAccurateFallback(Block block, int blockId, BlockPos blockPos, FastVec2i chunkPos, Exception ex, string stage)
+    {
+        try
+        {
+            string blockCode = SafeBlockCode(block, blockId);
             FastMapProfileRecorder.RecordClient(
                 "fastmap_coloraccurate_fallback",
                 chunkPos.X,
@@ -5217,48 +5236,72 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 detail: blockCode,
                 kind: "event",
                 category: "fastmap_image");
-            if (loggedColorAccurateFallbacks.TryAdd(blockCode, 0))
+
+            string logKey = blockCode + ":" + stage;
+            if (loggedColorAccurateFallbacks.TryAdd(logKey, 0))
             {
                 api.Logger.Warning(
-                    "[FastMap] Falling back to cached map color for block {0} after color-accurate lookup failed at {1}/{2}/{3}: {4}",
+                    "[FastMap] Falling back to cached map color for block {0} after color-accurate {1} lookup failed at {2}/{3}/{4}: {5}",
                     blockCode,
+                    stage,
                     blockPos.X,
                     blockPos.Y,
                     blockPos.Z,
                     ex.Message);
             }
+        }
+        catch
+        {
+            // Colour lookups run on the map worker thread; fallback diagnostics must never become another crash source.
+        }
+    }
 
-            return GetMapColor(blockId);
+    private static string SafeBlockCode(Block block, int blockId)
+    {
+        try
+        {
+            return block.Code?.ToShortString() ?? blockId.ToString();
+        }
+        catch
+        {
+            return blockId.ToString();
         }
     }
 
     private void LogTrueColorBrightSampleIfNeeded(Block block, int blockId, BlockPos blockPos, int baseColor, int randomColor, int finalColor)
     {
-        if (!config.LogTrueColorBrightSamples || IsLake(blockId) || !IsNearWhite(finalColor))
+        try
         {
-            return;
-        }
+            if (!config.LogTrueColorBrightSamples || IsLake(blockId) || !IsNearWhite(finalColor))
+            {
+                return;
+            }
 
-        string blockCode = block.Code?.ToShortString() ?? blockId.ToString();
-        if (!loggedTrueColorBrightSamples.TryAdd(blockCode, 0))
+            string blockCode = SafeBlockCode(block, blockId);
+            if (!loggedTrueColorBrightSamples.TryAdd(blockCode, 0))
+            {
+                return;
+            }
+
+            api.Logger.Notification(
+                "[FastMap] Bright true-colour sample block={0}, material={1}, pos={2}/{3}/{4}, base={5}, random={6}, final={7}, textureSubId={8}, climateMap={9}, seasonMap={10}, shapeUsesColormap={11}",
+                blockCode,
+                block.BlockMaterial,
+                blockPos.X,
+                blockPos.Y,
+                blockPos.Z,
+                FormatColor(baseColor),
+                FormatColor(randomColor),
+                FormatColor(finalColor),
+                block.TextureSubIdForBlockColor,
+                block.ClimateColorMapResolved != null,
+                block.SeasonColorMapResolved != null,
+                block.ShapeUsesColormap);
+        }
+        catch
         {
-            return;
+            // Diagnostics only. Never let modded block metadata break map generation.
         }
-
-        api.Logger.Notification(
-            "[FastMap] Bright true-colour sample block={0}, material={1}, pos={2}/{3}/{4}, base={5}, random={6}, final={7}, textureSubId={8}, climateMap={9}, seasonMap={10}, shapeUsesColormap={11}",
-            blockCode,
-            block.BlockMaterial,
-            blockPos.X,
-            blockPos.Y,
-            blockPos.Z,
-            FormatColor(baseColor),
-            FormatColor(randomColor),
-            FormatColor(finalColor),
-            block.TextureSubIdForBlockColor,
-            block.ClimateColorMapResolved != null,
-            block.SeasonColorMapResolved != null,
-            block.ShapeUsesColormap);
     }
 
     private static bool IsNearWhite(int color)

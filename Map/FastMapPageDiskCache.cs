@@ -3,8 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using FastMap.Cache;
 using K4os.Compression.LZ4;
-using Vintagestory.API.Config;
 using Vintagestory.API.MathTools;
 
 namespace FastMap.Map;
@@ -39,12 +39,12 @@ internal sealed class FastMapPageDiskCache
         this.enableCompression = enableCompression;
         this.useFilteredCache = useFilteredCache;
         this.useHighCompression = useHighCompression;
-        string worldPath = Path.Combine(GamePaths.DataPath, "FastMap", SanitizePathPart(savegameIdentifier));
+        string worldPath = FastMapStoragePaths.GetWorldPath(savegameIdentifier);
         v1RootPath = Path.Combine(worldPath, "pages-v1");
         v2RootPath = Path.Combine(worldPath, "pages-v2");
         v3RootPath = Path.Combine(worldPath, "pages-v3");
         rootPath = enableCompression ? (useFilteredCache ? v3RootPath : v2RootPath) : v1RootPath;
-        GamePaths.EnsurePathExists(rootPath);
+        Directory.CreateDirectory(rootPath);
         IndexExistingPages(v1RootPath);
         IndexExistingPages(v2RootPath);
         IndexExistingPages(v3RootPath);
@@ -551,19 +551,4 @@ internal sealed class FastMapPageDiskCache
         return Path.Combine(root, pageKey.X + "_" + pageKey.Y + ".fmp");
     }
 
-    private static string SanitizePathPart(string value)
-    {
-        char[] invalid = Path.GetInvalidFileNameChars();
-        char[] chars = value.ToCharArray();
-
-        for (int i = 0; i < chars.Length; i++)
-        {
-            if (Array.IndexOf(invalid, chars[i]) >= 0)
-            {
-                chars[i] = '_';
-            }
-        }
-
-        return new string(chars);
-    }
 }
