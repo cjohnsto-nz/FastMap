@@ -15,7 +15,6 @@ public sealed class FastMapConfig
     public bool CleanupKeepLatestPageVersion { get; set; } = true;
     public bool EnableVanillaMapDbWriteback { get; set; } = true;
     public bool CleanupStaleVanillaMapDbSidecarsOnStartup { get; set; } = true;
-    public bool EnableTerrainSamplerFallbackBackgroundGeneration { get; set; } = true;
     public int TerrainSamplerFallbackSampleStep { get; set; } = 4;
     public int TerrainSamplerFallbackResolutionScale { get; set; } = 4;
     public bool EnableTerrainSamplerFallbackTrueColor { get; set; } = true;
@@ -28,7 +27,6 @@ public sealed class FastMapConfig
     public string TerrainSamplerFallbackWaterTemperatureColor { get; set; } = "#123e30";
     public float TerrainSamplerFallbackWaterTemperatureStrength { get; set; } = 1.0f;
     public float TerrainSamplerFallbackWaterNoiseStrength { get; set; } = 0.04f;
-    public bool UseBrownTerrainFallbackPalette { get; set; } = true;
     public bool EnableTrueColorAirSurfaceRepair { get; set; } = true;
     public int TrueColorAirSurfaceRepairDepth { get; set; } = 32;
     public string TrueColorAirFallbackColor { get; set; } = "#282828";

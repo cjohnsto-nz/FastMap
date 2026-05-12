@@ -40,7 +40,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private readonly ICoreClientAPI capi;
     private readonly FastMapConfig config;
     private readonly FastMapPageDiskCache pageDiskCache;
-    private readonly FastMapTerrainFallbackDiskCache terrainFallbackDiskCache;
+    private readonly FastMapTerrainFallbackDiskCache normalTerrainFallbackDiskCache;
+    private readonly FastMapTerrainFallbackDiskCache brownTerrainFallbackDiskCache;
     private readonly FastMapTerrainFallbackDiskCache trueColorTerrainFallbackDiskCache;
     private readonly FastMapFallbackPalette fallbackPalette;
     private readonly FastMapTextureAtlas? textureAtlas;
@@ -123,6 +124,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private float flushAccum;
     private float evictAccum;
     private float statsAccum;
+    private int observedTerrainFallbackModeVersion;
     private int activePageLoadTasks;
     private int activeTerrainSamplerLoadTasks;
     private int activeTerrainFallbackCacheLoadTasks;
@@ -230,18 +232,24 @@ public sealed class FastPageMapLayer : RGBMapLayer
         config = FastMapModSystem.Instance?.Config ?? new FastMapConfig();
         config.Normalize();
         RefreshColorAccurateMode();
+        observedTerrainFallbackModeVersion = FastMapTerrainFallbackLayer.GenerationModeVersion;
         nativeDbPageBuildSemaphore = new SemaphoreSlim(config.MaxParallelNativeDbPageBuilds);
         pageDiskCache = new FastMapPageDiskCache(api.World.SavegameIdentifier, config.EnableCompressedCache, config.UseFilteredCache, config.UseHighCompressionCache);
-        terrainFallbackDiskCache = new FastMapTerrainFallbackDiskCache(
+        normalTerrainFallbackDiskCache = new FastMapTerrainFallbackDiskCache(
             api.World.SavegameIdentifier,
             config.TerrainSamplerFallbackResolutionScale,
             config.UseHighCompressionCache,
-            NormalFallbackCacheVariant());
+            "normal-vanilla-v1");
+        brownTerrainFallbackDiskCache = new FastMapTerrainFallbackDiskCache(
+            api.World.SavegameIdentifier,
+            config.TerrainSamplerFallbackResolutionScale,
+            config.UseHighCompressionCache,
+            "brown-v1");
         trueColorTerrainFallbackDiskCache = new FastMapTerrainFallbackDiskCache(
             api.World.SavegameIdentifier,
             config.TerrainSamplerFallbackResolutionScale,
             config.UseHighCompressionCache,
-            TrueColorFallbackCacheVariant());
+            "truecolour-palette-v1");
         fallbackPalette = FastMapFallbackPalette.Load(api, config);
         textureAtlas = config.EnableTextureAtlas ? new FastMapTextureAtlas(capi, FastMapPageComponent.PageSize) : null;
         fallbackTextureAtlas = config.EnableTextureAtlas
@@ -251,30 +259,19 @@ public sealed class FastPageMapLayer : RGBMapLayer
         OpenMapDatabase();
         api.Event.ChunkDirty += OnChunkDirty;
         api.Logger.Notification("[FastMap] Page cache: {0}", pageDiskCache.RootPath);
-        api.Logger.Notification("[FastMap] Terrain fallback cache: {0}", terrainFallbackDiskCache.RootPath);
+        api.Logger.Notification("[FastMap] Terrain normal fallback cache: {0}", normalTerrainFallbackDiskCache.RootPath);
+        api.Logger.Notification("[FastMap] Terrain fog-of-war fallback cache: {0}", brownTerrainFallbackDiskCache.RootPath);
         api.Logger.Notification("[FastMap] Terrain true-colour fallback cache: {0}", trueColorTerrainFallbackDiskCache.RootPath);
     }
 
     private FastMapTerrainFallbackDiskCache CurrentTerrainFallbackDiskCache =>
-        !config.UseBrownTerrainFallbackPalette && colorAccurate && config.EnableTerrainSamplerFallbackTrueColor
+        FastMapTerrainFallbackLayer.UseFogOfWarStyle
+            ? brownTerrainFallbackDiskCache
+            : colorAccurate && config.EnableTerrainSamplerFallbackTrueColor
             ? trueColorTerrainFallbackDiskCache
-            : terrainFallbackDiskCache;
+            : normalTerrainFallbackDiskCache;
 
     private static bool TerrainFallbackLayerActive => FastMapTerrainFallbackLayer.IsFallbackLayerActive;
-
-    private string NormalFallbackCacheVariant()
-    {
-        return config.UseBrownTerrainFallbackPalette
-            ? "brown-v1"
-            : "normal-vanilla-v1";
-    }
-
-    private string TrueColorFallbackCacheVariant()
-    {
-        return config.UseBrownTerrainFallbackPalette
-            ? "brown-v1"
-            : "truecolour-palette-v1";
-    }
 
     public override void OnLoaded()
     {
@@ -379,6 +376,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
         {
             return;
         }
+
+        RefreshTerrainFallbackModeIfNeeded();
 
 #if FASTMAPHITCHDIAGNOSTICS
         MarkFrameProfiler("fastmap-tick-begin");
@@ -1716,7 +1715,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         FastMapTerrainSamplerColumn[] terrainSamples = new FastMapTerrainSamplerColumn[lowResolutionPixels.Length];
         int[] heights = new int[lowResolutionPixels.Length];
         bool usePaletteFallback = colorAccurate && config.EnableTerrainSamplerFallbackTrueColor;
-        bool useBrownFallback = config.UseBrownTerrainFallbackPalette;
+        bool useBrownFallback = FastMapTerrainFallbackLayer.UseFogOfWarStyle;
         bool useTrueColorProbes = false;
         int trueColorProbeStride = Math.Max(1, config.TerrainSamplerFallbackTrueColorProbeStride);
         int trueColorProbeCellsPerAxis = useTrueColorProbes ? (cellsPerAxis + trueColorProbeStride - 1) / trueColorProbeStride : 0;
@@ -3192,7 +3191,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private bool ShouldSeasonallyTintFallbackGrass()
     {
-        return !config.UseBrownTerrainFallbackPalette
+        return !FastMapTerrainFallbackLayer.UseFogOfWarStyle
             && (fallbackPalette.HasClimatePlantTint || fallbackPalette.HasSeasonalGrassTint);
     }
 
@@ -3699,7 +3698,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private void QueueTerrainSamplerBackgroundGeneration(float dt)
     {
         if (disposed
-            || !config.EnableTerrainSamplerFallbackBackgroundGeneration
+            || !FastMapTerrainFallbackLayer.IsBackgroundGenerationActive
             || visiblePageKeys.Count > 0
             || !CanUseTerrainSamplerFallback(out _))
         {
@@ -4554,6 +4553,37 @@ public sealed class FastPageMapLayer : RGBMapLayer
         {
             pendingPageSaves.Clear();
             pendingTileSaves.Clear();
+        }
+    }
+
+    private void RefreshTerrainFallbackModeIfNeeded()
+    {
+        int version = FastMapTerrainFallbackLayer.GenerationModeVersion;
+        if (version == observedTerrainFallbackModeVersion)
+        {
+            return;
+        }
+
+        observedTerrainFallbackModeVersion = version;
+        foreach (FastMapPageComponent fallbackPage in fallbackPages.Values)
+        {
+            fallbackPage.DisposeTexture();
+        }
+
+        fallbackPages.Clear();
+        lock (terrainSamplerLoadLock)
+        {
+            terrainFallbackCacheLoadQueue.Clear();
+            queuedTerrainFallbackCacheLoads.Clear();
+            terrainSamplerLoadQueue.Clear();
+            delayedTerrainSamplerLoadQueue.Clear();
+            queuedTerrainSamplerLoads.Clear();
+            terrainSamplerFallbackPageKeys.Clear();
+            terrainSamplerLoadAttempts.Clear();
+        }
+
+        while (readyPages.TryDequeue(out _))
+        {
         }
     }
 

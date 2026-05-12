@@ -139,14 +139,6 @@
       "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler shrub density values. Requires Terrain Sampler column sample support."
     },
     {
-      "code": "EnableTerrainSamplerFallbackBackgroundGeneration",
-      "type": "boolean",
-      "default": false,
-      "clientSide": true,
-      "ingui": "Background fallback generation",
-      "comment": "Continue generating missing terrain-sampler fallback pages around the player while the world map is closed."
-    },
-    {
       "code": "TerrainSamplerFallbackResolutionScale",
       "type": "integer",
       "default": 4,
@@ -268,14 +260,6 @@
         "max": 1.0,
         "step": 0.01
       }
-    },
-    {
-      "code": "UseBrownTerrainFallbackPalette",
-      "type": "boolean",
-      "default": true,
-      "clientSide": true,
-      "ingui": "Brown terrain fallback",
-      "comment": "Use contrast-adjusted colours extracted from map-bkg.png for synthetic terrain-sampler fallback pages in both normal and true-colour map modes."
     },
     {
       "code": "EnableTrueColorAirSurfaceRepair",
