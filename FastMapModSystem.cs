@@ -116,7 +116,7 @@ public sealed class FastMapModSystem : ModSystem
             return;
         }
 
-        ReloadConfigAndRecreateTerrainLayer();
+        ReloadConfigSafely();
     }
 
     private void OnConfigLibConfigReload(string eventName, ref EnumHandling handling, IAttribute data)
@@ -126,7 +126,7 @@ public sealed class FastMapModSystem : ModSystem
             return;
         }
 
-        ReloadConfigAndRecreateTerrainLayer();
+        ReloadConfigSafely();
     }
 
     private static bool IsOwnConfigEvent(IAttribute data)
@@ -134,7 +134,7 @@ public sealed class FastMapModSystem : ModSystem
         return (data as ITreeAttribute)?.GetAsString("domain") == ModId;
     }
 
-    private void ReloadConfigAndRecreateTerrainLayer()
+    private void ReloadConfigSafely()
     {
         if (capi == null)
         {
@@ -154,7 +154,56 @@ public sealed class FastMapModSystem : ModSystem
         }
 #endif
 
-        ReplaceTerrainLayerRegistration(recreateFastMapLayer: true);
+        RefreshWorldMapRegistrationsAfterConfigReload();
+        capi.Logger.Notification("[FastMap] Reloaded config. Live map layer instances were left intact; constructor-only settings apply after the next world load.");
+    }
+
+    private void RefreshWorldMapRegistrationsAfterConfigReload()
+    {
+        if (capi == null)
+        {
+            return;
+        }
+
+        WorldMapManager? worldMapManager = capi.ModLoader.GetModSystem<WorldMapManager>(true);
+        if (worldMapManager == null)
+        {
+            return;
+        }
+
+        worldMapManager.MapLayerRegistry[TerrainLayerRegistryCode] = typeof(FastPageMapLayer);
+        worldMapManager.LayerGroupPositions[TerrainLayerRegistryCode] = 0.0;
+
+        bool terrainSamplerAvailable = IsTerrainSamplerIntegrationAvailable();
+        RefreshTerrainSamplerOverlayRegistration<FastMapTerrainFallbackLayer>(worldMapManager, "fastmap-terrain-fallback", 2.0, terrainSamplerAvailable);
+        RefreshTerrainSamplerOverlayRegistration<FastMapRainfallLayer>(worldMapManager, "fastmap-rainfall", 0.15, terrainSamplerAvailable && Config.EnableTerrainSamplerRainfallLayer);
+        RefreshTerrainSamplerOverlayRegistration<FastMapTemperatureLayer>(worldMapManager, "fastmap-temperature", 0.16, terrainSamplerAvailable && Config.EnableTerrainSamplerTemperatureLayer);
+        RefreshTerrainSamplerOverlayRegistration<FastMapForestDensityLayer>(worldMapManager, "fastmap-forest-density", 0.17, terrainSamplerAvailable && Config.EnableTerrainSamplerForestDensityLayer);
+        RefreshTerrainSamplerOverlayRegistration<FastMapShrubDensityLayer>(worldMapManager, "fastmap-shrub-density", 0.18, terrainSamplerAvailable && Config.EnableTerrainSamplerShrubDensityLayer);
+
+        if (worldMapManager.MapLayers.Count == 0)
+        {
+            capi.Logger.Warning("[FastMap] World map layer list was empty after config reload; rebuilding layer registrations to avoid an empty world map dialog.");
+            ReplaceTerrainLayerRegistration(recreateFastMapLayer: false);
+        }
+    }
+
+    private static void RefreshTerrainSamplerOverlayRegistration<T>(
+        WorldMapManager worldMapManager,
+        string code,
+        double position,
+        bool enabled) where T : MapLayer
+    {
+        if (enabled)
+        {
+            worldMapManager.MapLayerRegistry[code] = typeof(T);
+            worldMapManager.LayerGroupPositions[code] = position;
+        }
+        else if (FindLayerIndex<T>(worldMapManager) < 0)
+        {
+            worldMapManager.MapLayerRegistry.Remove(code);
+            worldMapManager.LayerGroupPositions.Remove(code);
+        }
     }
 
 #if FASTMAPHITCHDIAGNOSTICS
