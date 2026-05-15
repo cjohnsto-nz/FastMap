@@ -339,13 +339,28 @@ public abstract class FastMapTerrainSamplerOverlayLayer : MapLayer
         }
 
         samplerLookupAttempted = true;
-        sampler = FastMapTerrainSamplerAdapter.TryCreate();
+        sampler = FastMapTerrainSamplerAdapter.TryCreate(capi);
         if (sampler == null || !sampler.HasColumnSamples)
         {
             if (!unavailableLogged)
             {
                 unavailableLogged = true;
-                capi.Logger.Notification("[FastMap] {0} layer needs Terrain Sampler column samples; overlay disabled.", Title);
+                string? installedVersion = FastMapTerrainSamplerAdapter.InstalledTerrainSamplerVersion(capi);
+                if (installedVersion != null && !FastMapTerrainSamplerAdapter.IsInstalledVersionSupported(capi))
+                {
+                    capi.Logger.Notification(
+                        "[FastMap] {0} layer requires Terrain Sampler {1}+; installed {2}; overlay disabled.",
+                        Title,
+                        FastMapTerrainSamplerAdapter.MinimumSupportedVersion,
+                        installedVersion);
+                }
+                else
+                {
+                    capi.Logger.Notification(
+                        "[FastMap] {0} layer needs Terrain Sampler {1}+ column samples; overlay disabled.",
+                        Title,
+                        FastMapTerrainSamplerAdapter.MinimumSupportedVersion);
+                }
             }
 
             return false;

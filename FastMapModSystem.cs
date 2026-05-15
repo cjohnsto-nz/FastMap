@@ -351,12 +351,16 @@ public sealed class FastMapModSystem : ModSystem
 
     private bool IsTerrainSamplerIntegrationAvailable()
     {
-        bool available = FastMapTerrainSamplerAdapter.TryCreate() != null;
+        string? installedVersion = capi != null ? FastMapTerrainSamplerAdapter.InstalledTerrainSamplerVersion(capi) : null;
+        bool versionSupported = capi == null || FastMapTerrainSamplerAdapter.IsInstalledVersionSupported(capi);
+        bool available = versionSupported && FastMapTerrainSamplerAdapter.TryCreate(capi) != null;
         if (available)
         {
             if (!terrainSamplerAvailableLogged)
             {
-                capi?.Logger.Notification("[FastMap] Terrain Sampler integration detected; Pregen and sampler overlay map layers are available.");
+                capi?.Logger.Notification(
+                    "[FastMap] Terrain Sampler integration detected ({0}); Pregen and sampler overlay map layers are available.",
+                    installedVersion ?? "unknown version");
                 terrainSamplerAvailableLogged = true;
             }
 
@@ -365,7 +369,22 @@ public sealed class FastMapModSystem : ModSystem
 
         if (!terrainSamplerUnavailableLogged)
         {
-            capi?.Logger.Notification("[FastMap] Terrain Sampler integration not detected; Pregen and sampler overlay map layers are hidden.");
+            if (installedVersion == null)
+            {
+                capi?.Logger.Notification("[FastMap] Terrain Sampler integration not detected; Pregen and sampler overlay map layers are hidden.");
+            }
+            else if (!versionSupported)
+            {
+                capi?.Logger.Notification(
+                    "[FastMap] Terrain Sampler {0} detected, but FastMap requires {1}+; Pregen and sampler overlay map layers are hidden.",
+                    installedVersion,
+                    FastMapTerrainSamplerAdapter.MinimumSupportedVersion);
+            }
+            else
+            {
+                capi?.Logger.Notification("[FastMap] Terrain Sampler integration was detected but not ready; Pregen and sampler overlay map layers are hidden.");
+            }
+
             terrainSamplerUnavailableLogged = true;
         }
 

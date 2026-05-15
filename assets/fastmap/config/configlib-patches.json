@@ -112,7 +112,7 @@
       "default": false,
       "clientSide": true,
       "ingui": "Rainfall map layer",
-      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler rainfall values. Requires Terrain Sampler column sample support."
+      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler rainfall values. Requires Algernon's Terrain Sampler 1.2.2+."
     },
     {
       "code": "EnableTerrainSamplerTemperatureLayer",
@@ -120,7 +120,7 @@
       "default": false,
       "clientSide": true,
       "ingui": "Temperature map layer",
-      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler temperature values. Requires Terrain Sampler column sample support."
+      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler temperature values. Requires Algernon's Terrain Sampler 1.2.2+."
     },
     {
       "code": "EnableTerrainSamplerForestDensityLayer",
@@ -128,7 +128,7 @@
       "default": false,
       "clientSide": true,
       "ingui": "Forest density map layer",
-      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler forest density values. Requires Terrain Sampler column sample support."
+      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler forest density values. Requires Algernon's Terrain Sampler 1.2.2+."
     },
     {
       "code": "EnableTerrainSamplerShrubDensityLayer",
@@ -136,7 +136,7 @@
       "default": false,
       "clientSide": true,
       "ingui": "Shrub density map layer",
-      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler shrub density values. Requires Terrain Sampler column sample support."
+      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler shrub density values. Requires Algernon's Terrain Sampler 1.2.2+."
     },
     {
       "code": "TerrainSamplerFallbackResolutionScale",

@@ -111,6 +111,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private FastMapTerrainSamplerAdapter? terrainSamplerAdapter;
     private bool terrainSamplerUnavailableLogged;
     private bool terrainSamplerCapabilitiesLogged;
+    private bool observedTerrainFallbackLayerActive;
     private readonly ConcurrentDictionary<string, byte> loggedColorAccurateFallbacks = new();
     private readonly ConcurrentDictionary<string, byte> loggedTrueColorBrightSamples = new();
     private readonly object surfaceTileCacheLock = new();
@@ -233,6 +234,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         config.Normalize();
         RefreshColorAccurateMode();
         observedTerrainFallbackModeVersion = FastMapTerrainFallbackLayer.GenerationModeVersion;
+        observedTerrainFallbackLayerActive = TerrainFallbackLayerActive;
         nativeDbPageBuildSemaphore = new SemaphoreSlim(config.MaxParallelNativeDbPageBuilds);
         pageDiskCache = new FastMapPageDiskCache(api.World.SavegameIdentifier, config.EnableCompressedCache, config.UseFilteredCache, config.UseHighCompressionCache);
         normalTerrainFallbackDiskCache = new FastMapTerrainFallbackDiskCache(
@@ -397,6 +399,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
 
         RefreshTerrainFallbackModeIfNeeded();
+        RefreshTerrainFallbackActivationIfNeeded();
 
 #if FASTMAPHITCHDIAGNOSTICS
         MarkFrameProfiler("fastmap-tick-begin");
@@ -513,13 +516,9 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         disposed = true;
         api.Event.ChunkDirty -= OnChunkDirty;
-        WaitForTerrainSamplerTasksToStop();
+        WaitForMapDatabaseTasksToStop();
         FlushPendingSaves();
-        mapdb?.Dispose();
-        mapdb = null;
-        mapDbPath = null;
-        mapDbWritable = false;
-        mapDbKnownPositions = null;
+        CloseMapDatabaseForShutdown();
 
         foreach (FastMapPageComponent page in pages.Values)
         {
@@ -555,15 +554,16 @@ public sealed class FastPageMapLayer : RGBMapLayer
         chunksTmp = Array.Empty<IWorldChunk>();
     }
 
-    private void WaitForTerrainSamplerTasksToStop()
+    private void WaitForMapDatabaseTasksToStop()
     {
-        const int maxWaitMs = 2000;
+        const int maxWaitMs = 5000;
         const int sleepMs = 25;
 
         Stopwatch stopwatch = Stopwatch.StartNew();
         while (stopwatch.ElapsedMilliseconds < maxWaitMs)
         {
-            if (Volatile.Read(ref activeTerrainSamplerLoadTasks) == 0
+            if (Volatile.Read(ref activePageLoadTasks) == 0
+                && Volatile.Read(ref activeTerrainSamplerLoadTasks) == 0
                 && Volatile.Read(ref activeTerrainFallbackCacheLoadTasks) == 0)
             {
                 return;
@@ -573,8 +573,9 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
 
         api.Logger.Warning(
-            "[FastMap] Terrain sampler work was still active during shutdown after {0}ms; samplerActive={1}, cacheActive={2}. Continuing shutdown without waiting longer.",
+            "[FastMap] Map DB work was still active during shutdown after {0}ms; pageActive={1}, samplerActive={2}, cacheActive={3}. Continuing shutdown without waiting longer.",
             maxWaitMs,
+            Volatile.Read(ref activePageLoadTasks),
             Volatile.Read(ref activeTerrainSamplerLoadTasks),
             Volatile.Read(ref activeTerrainFallbackCacheLoadTasks));
     }
@@ -588,7 +589,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         if (config.CleanupStaleVanillaMapDbSidecarsOnStartup)
         {
-            CleanupVanillaMapDbSidecars(path);
+            CleanupVanillaMapDbSidecars(path, "startup");
         }
 
         mapdb = new MapDB(api.World.Logger);
@@ -627,13 +628,62 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
     }
 
-    private void CleanupVanillaMapDbSidecars(string dbPath)
+    private void CloseMapDatabaseForShutdown()
     {
-        DeleteVanillaMapDbSidecar(dbPath + "-wal");
-        DeleteVanillaMapDbSidecar(dbPath + "-shm");
+        string? dbPath = mapDbPath;
+
+        lock (dbLock)
+        {
+            TryCheckpointMapDatabase();
+            mapdb?.Dispose();
+            mapdb = null;
+            mapDbPath = null;
+            mapDbWritable = false;
+            mapDbKnownPositions = null;
+            mapDbKnownPageKeys = null;
+        }
+
+        if (config.CleanupStaleVanillaMapDbSidecarsOnStartup && dbPath != null)
+        {
+            CleanupVanillaMapDbSidecars(dbPath, "shutdown");
+        }
     }
 
-    private void DeleteVanillaMapDbSidecar(string path)
+    private void TryCheckpointMapDatabase()
+    {
+        try
+        {
+            DbConnection? connection = TryGetMapDbConnection();
+            if (connection == null)
+            {
+                return;
+            }
+
+            using DbCommand command = connection.CreateCommand();
+            command.CommandText = "PRAGMA wal_checkpoint(TRUNCATE);";
+            using DbDataReader reader = command.ExecuteReader();
+            if (reader.Read() && reader.FieldCount >= 3 && Convert.ToInt32(reader.GetValue(0)) != 0)
+            {
+                api.Logger.Warning(
+                    "[FastMap] Vanilla map database WAL checkpoint reported busy={0}, log={1}, checkpointed={2}.",
+                    reader.GetValue(0),
+                    reader.GetValue(1),
+                    reader.GetValue(2));
+            }
+        }
+        catch (Exception ex)
+        {
+            api.Logger.Warning("[FastMap] Failed checkpointing vanilla map database before shutdown: {0}", ex.Message);
+        }
+    }
+
+    private void CleanupVanillaMapDbSidecars(string dbPath, string reason)
+    {
+        DeleteVanillaMapDbSidecar(dbPath + "-wal", reason);
+        DeleteVanillaMapDbSidecar(dbPath + "-shm", reason);
+    }
+
+    private void DeleteVanillaMapDbSidecar(string path, string reason)
     {
         if (!File.Exists(path))
         {
@@ -643,11 +693,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
         try
         {
             File.Delete(path);
-            api.Logger.Notification("[FastMap] Deleted stale vanilla map database sidecar on startup: {0}", path);
+            api.Logger.Notification("[FastMap] Deleted vanilla map database sidecar on {0}: {1}", reason, path);
         }
         catch (Exception ex)
         {
-            api.Logger.Warning("[FastMap] Failed deleting stale vanilla map database sidecar {0}: {1}", path, ex.Message);
+            api.Logger.Warning("[FastMap] Failed deleting vanilla map database sidecar on {0} {1}: {2}", reason, path, ex.Message);
         }
     }
 
@@ -1701,13 +1751,26 @@ public sealed class FastPageMapLayer : RGBMapLayer
             return false;
         }
 
-        FastMapTerrainSamplerAdapter? sampler = terrainSamplerAdapter ??= FastMapTerrainSamplerAdapter.TryCreate();
+        FastMapTerrainSamplerAdapter? sampler = terrainSamplerAdapter ??= FastMapTerrainSamplerAdapter.TryCreate(api);
         if (sampler == null)
         {
             if (!terrainSamplerUnavailableLogged)
             {
                 terrainSamplerUnavailableLogged = true;
-                api.Logger.Notification("[FastMap] Terrain sampler fallback maps are enabled, but Algernon's Terrain Sampler was not available in this process.");
+                string? installedVersion = FastMapTerrainSamplerAdapter.InstalledTerrainSamplerVersion(api);
+                if (installedVersion != null && !FastMapTerrainSamplerAdapter.IsInstalledVersionSupported(api))
+                {
+                    api.Logger.Notification(
+                        "[FastMap] Terrain sampler fallback maps require Algernon's Terrain Sampler {0}+; installed {1}; fallback generation disabled.",
+                        FastMapTerrainSamplerAdapter.MinimumSupportedVersion,
+                        installedVersion);
+                }
+                else
+                {
+                    api.Logger.Notification(
+                        "[FastMap] Terrain sampler fallback maps require Algernon's Terrain Sampler {0}+; fallback generation disabled.",
+                        FastMapTerrainSamplerAdapter.MinimumSupportedVersion);
+                }
             }
 
             return false;
@@ -3220,6 +3283,12 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private float CurrentFallbackSeasonRel()
     {
+        int overrideMonth = FastMapTerrainFallbackLayer.SeasonOverrideMonth;
+        if (overrideMonth >= 0)
+        {
+            return (overrideMonth + 0.5f) / 12f;
+        }
+
         BlockPos pos = capi.World.Player?.Entity?.Pos.AsBlockPos ?? new BlockPos(0, api.World.SeaLevel, 0);
         return capi.World.Calendar.GetSeasonRel(pos);
     }
@@ -3253,7 +3322,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
             baseBlockX + FastMapPageComponent.PageSize / 2,
             seaLevel,
             baseBlockZ + FastMapPageComponent.PageSize / 2);
-        float yearRel = capi.World.Calendar.GetSeasonRel(centerPos);
+        float yearRel = FallbackSeasonRel(centerPos);
         const float hemisphereOffset = 0f;
 
         int seasonalPixels = 0;
@@ -3295,6 +3364,14 @@ public sealed class FastPageMapLayer : RGBMapLayer
         Interlocked.Increment(ref terrainSamplerFallbackSeasonalUploadPages);
         Interlocked.Add(ref terrainSamplerFallbackSeasonalPixels, seasonalPixels);
         return uploadPixels;
+    }
+
+    private float FallbackSeasonRel(BlockPos pos)
+    {
+        int overrideMonth = FastMapTerrainFallbackLayer.SeasonOverrideMonth;
+        return overrideMonth >= 0
+            ? (overrideMonth + 0.5f) / 12f
+            : capi.World.Calendar.GetSeasonRel(pos);
     }
 
     private int ApplyFallbackGrassTints(
@@ -4619,6 +4696,26 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         while (readyPages.TryDequeue(out _))
         {
+        }
+
+        if (TerrainFallbackLayerActive && visiblePageKeys.Count > 0)
+        {
+            RebuildVisiblePages();
+        }
+    }
+
+    private void RefreshTerrainFallbackActivationIfNeeded()
+    {
+        bool active = TerrainFallbackLayerActive;
+        if (active == observedTerrainFallbackLayerActive)
+        {
+            return;
+        }
+
+        observedTerrainFallbackLayerActive = active;
+        if (active && visiblePageKeys.Count > 0)
+        {
+            RebuildVisiblePages();
         }
     }
 

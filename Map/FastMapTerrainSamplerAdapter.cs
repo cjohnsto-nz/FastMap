@@ -1,6 +1,7 @@
 using System;
 using System.Reflection;
-using Vintagestory.API.MathTools;
+using ICoreAPI = Vintagestory.API.Common.ICoreAPI;
+using Mod = Vintagestory.API.Common.Mod;
 
 namespace FastMap.Map;
 
@@ -60,6 +61,9 @@ public readonly struct FastMapTerrainSamplerColumn
 
 internal sealed class FastMapTerrainSamplerAdapter
 {
+    public const string RequiredModId = "algernonsterrainsampler";
+    public const string MinimumSupportedVersion = "1.2.2";
+
     private readonly Func<int, int, int> sampleHeight;
     private readonly Func<int, int, FastMapTerrainSamplerColumn>? sampleColumn;
 
@@ -78,18 +82,20 @@ internal sealed class FastMapTerrainSamplerAdapter
 
     public FastMapTerrainSamplerColumn SampleColumn(int blockX, int blockZ)
     {
-        if (sampleColumn != null)
-        {
-            return sampleColumn(blockX, blockZ);
-        }
-
-        return new FastMapTerrainSamplerColumn(sampleHeight(blockX, blockZ));
+        return sampleColumn != null
+            ? sampleColumn(blockX, blockZ)
+            : new FastMapTerrainSamplerColumn(sampleHeight(blockX, blockZ));
     }
 
-    public static FastMapTerrainSamplerAdapter? TryCreate()
+    public static FastMapTerrainSamplerAdapter? TryCreate(ICoreAPI? api = null)
     {
         try
         {
+            if (!IsInstalledVersionSupported(api))
+            {
+                return null;
+            }
+
             foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
             {
                 Type? modType = assembly.GetType("AlgernonsTerrainSampler.TerrainSamplerMod");
@@ -113,11 +119,7 @@ internal sealed class FastMapTerrainSamplerAdapter
                 }
 
                 Func<int, int, int> sampleHeight = getHeightMethod.CreateDelegate<Func<int, int, int>>(instance);
-                Func<int, int, FastMapTerrainSamplerColumn>? sampleColumn =
-                    TryCreatePublicColumnSample(instance, modType)
-                    ?? TryCreateClimateColumnSample(assembly, instance, modType, sampleHeight);
-
-                return new FastMapTerrainSamplerAdapter(sampleHeight, sampleColumn);
+                return new FastMapTerrainSamplerAdapter(sampleHeight, TryCreateColumnSample(instance, modType, sampleHeight));
             }
         }
         catch
@@ -128,231 +130,105 @@ internal sealed class FastMapTerrainSamplerAdapter
         return null;
     }
 
-    private static Func<int, int, FastMapTerrainSamplerColumn>? TryCreatePublicColumnSample(object instance, Type modType)
+    public static bool IsInstalledVersionSupported(ICoreAPI? api)
     {
-        string[] methodNames =
+        if (api == null)
         {
-            "SampleColumn",
-            "GetColumnSample",
-            "GetTerrainColumnSample",
-            "GetTerrainSample"
-        };
+            return true;
+        }
 
-        foreach (string methodName in methodNames)
+        string? installedVersion = InstalledTerrainSamplerVersion(api);
+        return installedVersion != null && IsVersionAtLeast(installedVersion, MinimumSupportedVersion);
+    }
+
+    public static string? InstalledTerrainSamplerVersion(ICoreAPI api)
+    {
+        foreach (Mod mod in api.ModLoader.Mods)
         {
-            MethodInfo? method = modType.GetMethod(
-                methodName,
-                BindingFlags.Public | BindingFlags.Instance,
-                binder: null,
-                types: new[] { typeof(int), typeof(int) },
-                modifiers: null);
-
-            if (method == null || method.ReturnType == typeof(void))
+            if (string.Equals(mod.Info?.ModID, RequiredModId, StringComparison.OrdinalIgnoreCase))
             {
-                continue;
+                return mod.Info?.Version;
             }
-
-            return (blockX, blockZ) =>
-            {
-                object? result = method.Invoke(instance, new object[] { blockX, blockZ });
-                return TryReadColumnSample(result, out FastMapTerrainSamplerColumn sample)
-                    ? sample
-                    : new FastMapTerrainSamplerColumn(ReadInt(result, "Height", "BlockColumnHeight", "Y") ?? 0);
-            };
         }
 
         return null;
     }
 
-    private static Func<int, int, FastMapTerrainSamplerColumn>? TryCreateClimateColumnSample(
-        Assembly terrainSamplerAssembly,
+    private static bool IsVersionAtLeast(string installedVersion, string minimumVersion)
+    {
+        Version installed = ParseVersionPrefix(installedVersion);
+        Version minimum = ParseVersionPrefix(minimumVersion);
+        return installed.CompareTo(minimum) >= 0;
+    }
+
+    private static Version ParseVersionPrefix(string version)
+    {
+        ReadOnlySpan<char> span = version.AsSpan().Trim();
+        int length = 0;
+        bool previousWasDot = false;
+
+        while (length < span.Length)
+        {
+            char c = span[length];
+            if (char.IsDigit(c))
+            {
+                previousWasDot = false;
+                length++;
+                continue;
+            }
+
+            if (c == '.' && !previousWasDot)
+            {
+                previousWasDot = true;
+                length++;
+                continue;
+            }
+
+            break;
+        }
+
+        string numeric = span[..length].TrimEnd('.').ToString();
+        return Version.TryParse(numeric, out Version? parsed) ? parsed : new Version(0, 0, 0);
+    }
+
+    private static Func<int, int, FastMapTerrainSamplerColumn>? TryCreateColumnSample(
         object instance,
         Type modType,
         Func<int, int, int> sampleHeight)
     {
-        try
-        {
-            PropertyInfo? genTerraProperty = modType.GetProperty("GenTerra", BindingFlags.Public | BindingFlags.Instance);
-            object? genTerra = genTerraProperty?.GetValue(instance);
-            if (genTerra == null)
-            {
-                return null;
-            }
+        MethodInfo? method = modType.GetMethod(
+            "SampleColumn",
+            BindingFlags.Public | BindingFlags.Instance,
+            binder: null,
+            types: new[] { typeof(int), typeof(int) },
+            modifiers: null);
 
-            Type genTerraType = genTerra.GetType();
-            Type? worldCoordinateType = terrainSamplerAssembly.GetType("AlgernonsTerrainSampler.Coordinates.WorldMapCoordinate");
-            Type? mapCoordinateType = terrainSamplerAssembly.GetType("AlgernonsTerrainSampler.Coordinates.MapCoordinate");
-            Type? terrainGenerationLibType = terrainSamplerAssembly.GetType("AlgernonsTerrainSampler.Terrain.TerrainGenerationLib");
-            Type? mappingType = terrainSamplerAssembly.GetType("AlgernonsTerrainSampler.Mapping");
-            if (worldCoordinateType == null || mapCoordinateType == null || terrainGenerationLibType == null || mappingType == null)
-            {
-                return null;
-            }
-
-            MethodInfo? worldToChunk = mappingType.GetMethod("WorldToMapChunkCoordinate", BindingFlags.Public | BindingFlags.Static);
-            MethodInfo? createContext = terrainGenerationLibType.GetMethod("CreateTerrainGenerationContext", BindingFlags.Public | BindingFlags.Static);
-            MethodInfo? calculateRainfall = terrainGenerationLibType.GetMethod("CalculateRainfallFromClimate", BindingFlags.Public | BindingFlags.Static);
-            if (worldToChunk == null || createContext == null || calculateRainfall == null)
-            {
-                return null;
-            }
-
-            PropertyInfo? regionChunkSizeProperty = genTerraType.GetProperty("RegionChunkSize", BindingFlags.Public | BindingFlags.Instance);
-            PropertyInfo? regionSizeProperty = genTerraType.GetProperty("RegionSize", BindingFlags.Public | BindingFlags.Instance);
-            PropertyInfo? regionMapSizeProperty = genTerraType.GetProperty("RegionMapSize", BindingFlags.Public | BindingFlags.Instance);
-            PropertyInfo? numberOfOctavesProperty = genTerraType.GetProperty("NumberOfOctaves", BindingFlags.Public | BindingFlags.Instance);
-            PropertyInfo? distort2dxProperty = genTerraType.GetProperty("Distort2dx", BindingFlags.Public | BindingFlags.Instance);
-            PropertyInfo? distort2dzProperty = genTerraType.GetProperty("Distort2dz", BindingFlags.Public | BindingFlags.Instance);
-            PropertyInfo? basegameGenMapsProperty = genTerraType.GetProperty("BasegameGenMaps", BindingFlags.Public | BindingFlags.Instance);
-            FieldInfo? landformMapByRegionField = genTerraType.GetField("LandformMapByRegion", BindingFlags.Public | BindingFlags.Instance);
-            FieldInfo? landformsField = genTerraType.GetField("landforms", BindingFlags.Public | BindingFlags.Instance);
-
-            object? basegameGenMaps = basegameGenMapsProperty?.GetValue(genTerra);
-            if (basegameGenMaps == null)
-            {
-                return null;
-            }
-
-            Type genMapsType = basegameGenMaps.GetType();
-            FieldInfo? landformsGenField = genMapsType.GetField("landformsGen", BindingFlags.Public | BindingFlags.Instance);
-            FieldInfo? upheavelGenField = genMapsType.GetField("upheavelGen", BindingFlags.Public | BindingFlags.Instance);
-            FieldInfo? oceanGenField = genMapsType.GetField("oceanGen", BindingFlags.Public | BindingFlags.Instance);
-            FieldInfo? climateGenField = genMapsType.GetField("climateGen", BindingFlags.Public | BindingFlags.Instance);
-            if (landformsGenField == null || upheavelGenField == null || oceanGenField == null || climateGenField == null)
-            {
-                return null;
-            }
-
-            MethodInfo? noiseMethod = distort2dxProperty?.PropertyType.GetMethod(
-                "Noise",
-                BindingFlags.Public | BindingFlags.Instance,
-                binder: null,
-                types: new[] { typeof(double), typeof(double) },
-                modifiers: null);
-
-            if (noiseMethod == null)
-            {
-                return null;
-            }
-
-            bool disabled = false;
-            return (blockX, blockZ) =>
-            {
-                int height = sampleHeight(blockX, blockZ);
-                if (disabled)
-                {
-                    return new FastMapTerrainSamplerColumn(height);
-                }
-
-                try
-                {
-                    object worldCoordinate = Activator.CreateInstance(worldCoordinateType, blockX, blockZ)!;
-                    object chunkCoordinate = worldToChunk.Invoke(null, new object[] { blockX, blockZ })!;
-                    object blockColumnInChunk = Activator.CreateInstance(mapCoordinateType, blockX % 32, blockZ % 32)!;
-                    object context = createContext.Invoke(null, new[]
-                    {
-                        chunkCoordinate,
-                        regionChunkSizeProperty!.GetValue(genTerra)!,
-                        regionSizeProperty!.GetValue(genTerra)!,
-                        landformMapByRegionField!.GetValue(genTerra)!,
-                        regionMapSizeProperty!.GetValue(genTerra)!,
-                        landformsField!.GetValue(genTerra)!,
-                        numberOfOctavesProperty!.GetValue(genTerra)!,
-                        32,
-                        landformsGenField.GetValue(basegameGenMaps)!,
-                        upheavelGenField.GetValue(basegameGenMaps)!,
-                        oceanGenField.GetValue(basegameGenMaps)!,
-                        climateGenField.GetValue(basegameGenMaps)!,
-                        true
-                    })!;
-
-                    object? distort2dx = distort2dxProperty!.GetValue(genTerra);
-                    object? distort2dz = distort2dzProperty!.GetValue(genTerra);
-                    if (distort2dx == null || distort2dz == null)
-                    {
-                        return new FastMapTerrainSamplerColumn(height);
-                    }
-
-                    float rainfall = (float)calculateRainfall.Invoke(null, new[]
-                    {
-                        blockColumnInChunk,
-                        context,
-                        32,
-                        height,
-                        worldCoordinate,
-                        distort2dx,
-                        distort2dz
-                    })!;
-
-                    if (rainfall < 0f || !TrySampleClimateColor(context, blockColumnInChunk, blockX, blockZ, distort2dx, distort2dz, noiseMethod, out int climateColor))
-                    {
-                        return new FastMapTerrainSamplerColumn(height);
-                    }
-
-                    float temperature = ((climateColor >> 16) & 0xFF) / 255f;
-                    return new FastMapTerrainSamplerColumn(height, rainfall, temperature, climateColor);
-                }
-                catch
-                {
-                    disabled = true;
-                    return new FastMapTerrainSamplerColumn(height);
-                }
-            };
-        }
-        catch
+        if (method == null || method.ReturnType == typeof(void))
         {
             return null;
         }
-    }
 
-    private static bool TrySampleClimateColor(
-        object context,
-        object blockColumnInChunk,
-        int blockX,
-        int blockZ,
-        object distort2dx,
-        object distort2dz,
-        MethodInfo noiseMethod,
-        out int climateColor)
-    {
-        climateColor = 0;
-        object? climateCorners = context.GetType().GetField("ClimateMapCorners")?.GetValue(context);
-        if (climateCorners == null)
+        return (blockX, blockZ) =>
         {
-            return false;
-        }
-
-        int upLeft = ReadInt(climateCorners, "UpLeft") ?? 0;
-        int upRight = ReadInt(climateCorners, "UpRight") ?? 0;
-        int botLeft = ReadInt(climateCorners, "BotLeft") ?? 0;
-        int botRight = ReadInt(climateCorners, "BotRight") ?? 0;
-        if (upLeft == 0 && upRight == 0 && botLeft == 0 && botRight == 0)
-        {
-            return false;
-        }
-
-        int localX = ReadInt(blockColumnInChunk, "X") ?? blockX % 32;
-        int localZ = ReadInt(blockColumnInChunk, "Z") ?? blockZ % 32;
-        double dx = (double)noiseMethod.Invoke(distort2dx, new object[] { (double)blockX, (double)blockZ })!;
-        double dz = (double)noiseMethod.Invoke(distort2dz, new object[] { (double)blockX, (double)blockZ })!;
-        float x = localX / 32f + (float)dx / 32f;
-        float z = localZ / 32f + (float)dz / 32f;
-        climateColor = GameMath.BiLerpRgbColor(x, z, upLeft, upRight, botLeft, botRight);
-        return true;
+            object? result = method.Invoke(instance, new object[] { blockX, blockZ });
+            return TryReadColumnSample(result, out FastMapTerrainSamplerColumn sample)
+                ? sample
+                : new FastMapTerrainSamplerColumn(sampleHeight(blockX, blockZ));
+        };
     }
 
     private static bool TryReadColumnSample(object? result, out FastMapTerrainSamplerColumn sample)
     {
-        int? height = ReadInt(result, "Height", "BlockColumnHeight", "Y");
+        int? height = ReadInt(result, "Height");
         if (height == null)
         {
             sample = default;
             return false;
         }
 
-        int? climateColor = ReadInt(result, "ClimateColor", "Climate", "ClimateMapColor");
-        float? rainfall = ReadFloat(result, "Rainfall", "WorldgenRainfall", "WorldGenRainfall");
-        float? temperature = ReadFloat(result, "Temperature", "WorldgenTemperature", "WorldGenTemperature");
+        int? climateColor = ReadInt(result, "ClimateColor");
+        float? rainfall = ReadFloat(result, "Rainfall");
+        float? temperature = ReadFloat(result, "Temperature");
         if (climateColor != null)
         {
             rainfall ??= ((climateColor.Value >> 8) & 0xFF) / 255f;
@@ -370,12 +246,12 @@ internal sealed class FastMapTerrainSamplerAdapter
             rainfall.Value,
             temperature.Value,
             climateColor ?? 0,
-            ReadFloat(result, "ForestDensity", "Forest", "ForestRel") ?? 0f,
-            ReadFloat(result, "ShrubDensity", "ShrubsDensity", "ShrubDensity", "ShrubRel") ?? 0f);
+            ReadFloat(result, "ForestDensity") ?? 0f,
+            ReadFloat(result, "ShrubDensity") ?? 0f);
         return true;
     }
 
-    private static int? ReadInt(object? instance, params string[] names)
+    private static int? ReadInt(object? instance, string name)
     {
         if (instance == null)
         {
@@ -383,33 +259,30 @@ internal sealed class FastMapTerrainSamplerAdapter
         }
 
         Type type = instance.GetType();
-        foreach (string name in names)
+        PropertyInfo? property = type.GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
+        if (property != null)
         {
-            PropertyInfo? property = type.GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
-            if (property != null)
+            object? value = property.GetValue(instance);
+            if (value != null)
             {
-                object? value = property.GetValue(instance);
-                if (value != null)
-                {
-                    return Convert.ToInt32(value);
-                }
+                return Convert.ToInt32(value);
             }
+        }
 
-            FieldInfo? field = type.GetField(name, BindingFlags.Public | BindingFlags.Instance);
-            if (field != null)
+        FieldInfo? field = type.GetField(name, BindingFlags.Public | BindingFlags.Instance);
+        if (field != null)
+        {
+            object? value = field.GetValue(instance);
+            if (value != null)
             {
-                object? value = field.GetValue(instance);
-                if (value != null)
-                {
-                    return Convert.ToInt32(value);
-                }
+                return Convert.ToInt32(value);
             }
         }
 
         return null;
     }
 
-    private static float? ReadFloat(object? instance, params string[] names)
+    private static float? ReadFloat(object? instance, string name)
     {
         if (instance == null)
         {
@@ -417,26 +290,23 @@ internal sealed class FastMapTerrainSamplerAdapter
         }
 
         Type type = instance.GetType();
-        foreach (string name in names)
+        PropertyInfo? property = type.GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
+        if (property != null)
         {
-            PropertyInfo? property = type.GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
-            if (property != null)
+            object? value = property.GetValue(instance);
+            if (value != null)
             {
-                object? value = property.GetValue(instance);
-                if (value != null)
-                {
-                    return Convert.ToSingle(value);
-                }
+                return Convert.ToSingle(value);
             }
+        }
 
-            FieldInfo? field = type.GetField(name, BindingFlags.Public | BindingFlags.Instance);
-            if (field != null)
+        FieldInfo? field = type.GetField(name, BindingFlags.Public | BindingFlags.Instance);
+        if (field != null)
+        {
+            object? value = field.GetValue(instance);
+            if (value != null)
             {
-                object? value = field.GetValue(instance);
-                if (value != null)
-                {
-                    return Convert.ToSingle(value);
-                }
+                return Convert.ToSingle(value);
             }
         }
 
