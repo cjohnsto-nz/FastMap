@@ -107,6 +107,14 @@
       "title": "Experimental"
     },
     {
+      "code": "DisableTerrainSamplerFallbackLayer",
+      "type": "boolean",
+      "default": false,
+      "clientSide": true,
+      "ingui": "Disable Pregen map layer",
+      "comment": "Hide the synthetic Pregen terrain-sampler map layer even when Algernon's Terrain Sampler is detected. Existing FastMap terrain caching is unaffected."
+    },
+    {
       "code": "EnableTerrainSamplerRainfallLayer",
       "type": "boolean",
       "default": false,

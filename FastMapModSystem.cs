@@ -238,7 +238,11 @@ public sealed class FastMapModSystem : ModSystem
         worldMapManager.LayerGroupPositions[TerrainLayerRegistryCode] = 0.0;
 
         bool terrainSamplerAvailable = IsTerrainSamplerIntegrationAvailable();
-        RefreshTerrainSamplerOverlayRegistration<FastMapTerrainFallbackLayer>(worldMapManager, "fastmap-terrain-fallback", 2.0, terrainSamplerAvailable);
+        RefreshTerrainSamplerOverlayRegistration<FastMapTerrainFallbackLayer>(
+            worldMapManager,
+            "fastmap-terrain-fallback",
+            2.0,
+            terrainSamplerAvailable && !Config.DisableTerrainSamplerFallbackLayer);
         RefreshTerrainSamplerOverlayRegistration<FastMapRainfallLayer>(worldMapManager, "fastmap-rainfall", 0.15, terrainSamplerAvailable && Config.EnableTerrainSamplerRainfallLayer);
         RefreshTerrainSamplerOverlayRegistration<FastMapTemperatureLayer>(worldMapManager, "fastmap-temperature", 0.16, terrainSamplerAvailable && Config.EnableTerrainSamplerTemperatureLayer);
         RefreshTerrainSamplerOverlayRegistration<FastMapForestDensityLayer>(worldMapManager, "fastmap-forest-density", 0.17, terrainSamplerAvailable && Config.EnableTerrainSamplerForestDensityLayer);
@@ -384,7 +388,7 @@ public sealed class FastMapModSystem : ModSystem
             worldMapManager,
             "fastmap-terrain-fallback",
             2.0,
-            enabled: terrainSamplerAvailable,
+            enabled: terrainSamplerAvailable && !Config.DisableTerrainSamplerFallbackLayer,
             recreateExisting);
         SyncTerrainSamplerOverlayLayer<FastMapRainfallLayer>(
             worldMapManager,
@@ -421,9 +425,13 @@ public sealed class FastMapModSystem : ModSystem
         {
             if (!terrainSamplerAvailableLogged)
             {
+                string pregenStatus = Config.DisableTerrainSamplerFallbackLayer
+                    ? "Pregen map layer is disabled by config"
+                    : "Pregen map layer is available";
                 capi?.Logger.Notification(
-                    "[FastMap] Terrain Sampler integration detected ({0}); Pregen and sampler overlay map layers are available.",
-                    installedVersion ?? "unknown version");
+                    "[FastMap] Terrain Sampler integration detected ({0}); {1}; sampler overlay map layers are available.",
+                    installedVersion ?? "unknown version",
+                    pregenStatus);
                 terrainSamplerAvailableLogged = true;
             }
 

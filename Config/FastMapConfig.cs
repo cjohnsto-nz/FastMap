@@ -17,6 +17,7 @@ public sealed class FastMapConfig
     public bool CleanupStaleVanillaMapDbSidecarsOnStartup { get; set; } = true;
     public int TerrainSamplerFallbackSampleStep { get; set; } = 4;
     public int TerrainSamplerFallbackResolutionScale { get; set; } = 4;
+    public bool DisableTerrainSamplerFallbackLayer { get; set; } = false;
     public bool EnableTerrainSamplerFallbackTrueColor { get; set; } = true;
     public int TerrainSamplerFallbackTrueColorProbeStride { get; set; } = 4;
     public int TerrainSamplerFallbackHeightOffset { get; set; } = 0;
