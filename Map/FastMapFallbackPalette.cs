@@ -145,6 +145,7 @@ internal sealed class FastMapFallbackPalette
     public bool TryGetColor(
         int height,
         int seaLevel,
+        int waterLevelOffset,
         bool useSnow,
         float dryGrassWeight,
         float lushGrassWeight,
@@ -153,8 +154,7 @@ internal sealed class FastMapFallbackPalette
         out int color,
         out bool flatten)
     {
-        int waterHeight = seaLevel - 2;
-        flatten = height <= waterHeight;
+        flatten = FastMapTerrainWater.IsWaterHeight(height, seaLevel, waterLevelOffset);
         int[] palette = flatten
             ? water
             : useSnow

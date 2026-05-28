@@ -112,7 +112,7 @@
       "default": false,
       "clientSide": true,
       "ingui": "Rainfall map layer",
-      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler rainfall values. Requires Algernon's Terrain Sampler 1.2.2+."
+      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler rainfall values. Requires Algernon's Terrain Sampler 1.3.0+."
     },
     {
       "code": "EnableTerrainSamplerTemperatureLayer",
@@ -120,7 +120,7 @@
       "default": false,
       "clientSide": true,
       "ingui": "Temperature map layer",
-      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler temperature values. Requires Algernon's Terrain Sampler 1.2.2+."
+      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler temperature values. Requires Algernon's Terrain Sampler 1.3.0+."
     },
     {
       "code": "EnableTerrainSamplerForestDensityLayer",
@@ -128,7 +128,7 @@
       "default": false,
       "clientSide": true,
       "ingui": "Forest density map layer",
-      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler forest density values. Requires Algernon's Terrain Sampler 1.2.2+."
+      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler forest density values. Requires Algernon's Terrain Sampler 1.3.0+."
     },
     {
       "code": "EnableTerrainSamplerShrubDensityLayer",
@@ -136,7 +136,7 @@
       "default": false,
       "clientSide": true,
       "ingui": "Shrub density map layer",
-      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler shrub density values. Requires Algernon's Terrain Sampler 1.2.2+."
+      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler shrub density values. Requires Algernon's Terrain Sampler 1.3.0+."
     },
     {
       "code": "TerrainSamplerFallbackResolutionScale",
@@ -169,6 +169,45 @@
       "range": {
         "min": 1,
         "max": 32,
+        "step": 1
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackHeightOffset",
+      "type": "integer",
+      "default": 0,
+      "clientSide": true,
+      "ingui": "Fallback height offset",
+      "comment": "Global block-height offset applied only to synthetic Pregen terrain-sampler tiles. Positive values make sampled terrain render higher relative to sea level.",
+      "range": {
+        "min": -64,
+        "max": 64,
+        "step": 1
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackTerraPretyHeightOffset",
+      "type": "integer",
+      "default": 2,
+      "clientSide": true,
+      "ingui": "Terra Prety height offset",
+      "comment": "Additional block-height offset applied to synthetic Pregen tiles when Terra Prety is loaded. Added on top of the global fallback height offset.",
+      "range": {
+        "min": -64,
+        "max": 64,
+        "step": 1
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackWaterLevelOffset",
+      "type": "integer",
+      "default": -1,
+      "clientSide": true,
+      "ingui": "Fallback water level offset",
+      "comment": "Block-height offset applied to the sea-level cutoff used by synthetic Pregen water classification. With the default -1, sea level 220 treats terrain height 218 and below as water when using the exclusive cutoff.",
+      "range": {
+        "min": -64,
+        "max": 64,
         "step": 1
       }
     },

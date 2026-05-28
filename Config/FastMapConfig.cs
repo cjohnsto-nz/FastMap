@@ -19,6 +19,9 @@ public sealed class FastMapConfig
     public int TerrainSamplerFallbackResolutionScale { get; set; } = 4;
     public bool EnableTerrainSamplerFallbackTrueColor { get; set; } = true;
     public int TerrainSamplerFallbackTrueColorProbeStride { get; set; } = 4;
+    public int TerrainSamplerFallbackHeightOffset { get; set; } = 0;
+    public int TerrainSamplerFallbackTerraPretyHeightOffset { get; set; } = 0;
+    public int TerrainSamplerFallbackWaterLevelOffset { get; set; } = -1;
     public int TerrainSamplerFallbackSnowStartHeight { get; set; } = 250;
     public int TerrainSamplerFallbackSeasonUploadBucketsPerYear { get; set; } = 12;
     public string TerrainSamplerFallbackWaterBaseColor { get; set; } = "#0f3231";
@@ -97,6 +100,9 @@ public sealed class FastMapConfig
         TerrainSamplerFallbackSampleStep = Math.Clamp(TerrainSamplerFallbackSampleStep, 1, 16);
         TerrainSamplerFallbackResolutionScale = Math.Clamp(TerrainSamplerFallbackResolutionScale, 1, 32);
         TerrainSamplerFallbackTrueColorProbeStride = Math.Clamp(TerrainSamplerFallbackTrueColorProbeStride, 1, 32);
+        TerrainSamplerFallbackHeightOffset = Math.Clamp(TerrainSamplerFallbackHeightOffset, -64, 64);
+        TerrainSamplerFallbackTerraPretyHeightOffset = Math.Clamp(TerrainSamplerFallbackTerraPretyHeightOffset, -64, 64);
+        TerrainSamplerFallbackWaterLevelOffset = Math.Clamp(TerrainSamplerFallbackWaterLevelOffset, -64, 64);
         TerrainSamplerFallbackSnowStartHeight = Math.Clamp(TerrainSamplerFallbackSnowStartHeight, 1, 100000);
         TerrainSamplerFallbackSeasonUploadBucketsPerYear = Math.Clamp(TerrainSamplerFallbackSeasonUploadBucketsPerYear, 1, 128);
         TerrainSamplerFallbackWaterBaseColor = string.IsNullOrWhiteSpace(TerrainSamplerFallbackWaterBaseColor)

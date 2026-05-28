@@ -89,6 +89,11 @@ public sealed class FastMapModSystem : ModSystem
                 .WithDescription("Delete old FastMap page-version cache folders")
                 .WithAdditionalInformation("Uses fastmap.json CleanupKeepLatestPageVersion. When enabled, the newest pages-vN folder in each world cache is preserved.")
                 .HandleWith(OnCleanupCacheCommand)
+            .EndSubCommand()
+            .BeginSubCommand("sealevel")
+                .WithDescription("Report FastMap sea-level diagnostics")
+                .WithAdditionalInformation("Shows the world sea level FastMap uses for pregen, plus the terrain sampler height at your current position when available.")
+                .HandleWith(OnSeaLevelCommand)
             .EndSubCommand();
     }
 
@@ -107,6 +112,64 @@ public sealed class FastMapModSystem : ModSystem
         return result.Failures == 0
             ? TextCommandResult.Success(summary)
             : TextCommandResult.Error(summary);
+    }
+
+    private TextCommandResult OnSeaLevelCommand(TextCommandCallingArgs args)
+    {
+        if (capi == null)
+        {
+            return TextCommandResult.Error("FastMap client API is not available.");
+        }
+
+        int seaLevel = capi.World.SeaLevel;
+        int mapHeight = capi.World.BlockAccessor.MapSizeY;
+        FastMapModDetectionResult terraPretyDetection = FastMapModDetection.DetectMod(capi, "terraprety");
+        bool terraPretyLoaded = terraPretyDetection.Present;
+        int terrainSamplerHeightOffset = Config.TerrainSamplerFallbackHeightOffset
+            + (terraPretyLoaded ? Config.TerrainSamplerFallbackTerraPretyHeightOffset : 0);
+        int waterHeightThreshold = FastMapTerrainWater.WaterHeightThreshold(seaLevel, Config.TerrainSamplerFallbackWaterLevelOffset);
+        string message = $"FastMap sea level: {seaLevel}; pregen water cutoff: < {waterHeightThreshold}; world height: {mapHeight}; pregen height offset: {terrainSamplerHeightOffset}"
+            + $" (global {Config.TerrainSamplerFallbackHeightOffset}, Terra Prety loaded {terraPretyLoaded} via {terraPretyDetection.Source}, Terra Prety {Config.TerrainSamplerFallbackTerraPretyHeightOffset}; water level offset {Config.TerrainSamplerFallbackWaterLevelOffset}).";
+        if (!terraPretyLoaded)
+        {
+            message += $" Terra Prety detection details: {terraPretyDetection.Details}.";
+        }
+
+        EntityPlayer? playerEntity = capi.World.Player?.Entity;
+        if (playerEntity == null)
+        {
+            return TextCommandResult.Success(message);
+        }
+
+        int x = (int)Math.Floor(playerEntity.Pos.X);
+        int y = (int)Math.Floor(playerEntity.Pos.Y);
+        int z = (int)Math.Floor(playerEntity.Pos.Z);
+        message += $" Player block position: {x}, {y}, {z}.";
+
+        FastMapTerrainSamplerAdapter? sampler = FastMapTerrainSamplerAdapter.TryCreate(capi);
+        if (sampler == null)
+        {
+            string? installedVersion = FastMapTerrainSamplerAdapter.InstalledTerrainSamplerVersion(capi);
+            message += installedVersion == null
+                ? " Terrain Sampler: not installed or not loaded."
+                : $" Terrain Sampler: installed version {installedVersion}, requires {FastMapTerrainSamplerAdapter.MinimumSupportedVersion}+.";
+            return TextCommandResult.Success(message);
+        }
+
+        try
+        {
+            FastMapTerrainSamplerColumn sample = sampler.SampleColumn(x, z);
+            int adjustedHeight = Math.Clamp(sample.Height + terrainSamplerHeightOffset, 0, Math.Max(0, mapHeight - 1));
+            int delta = adjustedHeight - seaLevel;
+            string deltaText = delta > 0 ? $"+{delta}" : delta.ToString();
+            message += $" Terrain Sampler height here: raw {sample.Height}, pregen {adjustedHeight} ({deltaText} vs sea level).";
+        }
+        catch (Exception ex)
+        {
+            message += $" Terrain Sampler: sample failed ({ex.GetType().Name}: {ex.Message}).";
+        }
+
+        return TextCommandResult.Success(message);
     }
 
     private void OnConfigLibConfigSaved(string eventName, ref EnumHandling handling, IAttribute data)

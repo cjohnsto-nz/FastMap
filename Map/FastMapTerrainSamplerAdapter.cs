@@ -43,6 +43,13 @@ public readonly struct FastMapTerrainSamplerColumn
     public float ForestDensity { get; }
     public float ShrubDensity { get; }
 
+    public FastMapTerrainSamplerColumn WithHeight(int height)
+    {
+        return HasClimate
+            ? new FastMapTerrainSamplerColumn(height, Rainfall, Temperature, ClimateColor, ForestDensity, ShrubDensity)
+            : new FastMapTerrainSamplerColumn(height);
+    }
+
     private static float NormalizeFraction(float value)
     {
         return Math.Clamp(value > 1f ? value / 255f : value, 0f, 1f);
@@ -62,7 +69,7 @@ public readonly struct FastMapTerrainSamplerColumn
 internal sealed class FastMapTerrainSamplerAdapter
 {
     public const string RequiredModId = "algernonsterrainsampler";
-    public const string MinimumSupportedVersion = "1.2.2";
+    public const string MinimumSupportedVersion = "1.3.0";
 
     private readonly Func<int, int, int> sampleHeight;
     private readonly Func<int, int, FastMapTerrainSamplerColumn>? sampleColumn;
