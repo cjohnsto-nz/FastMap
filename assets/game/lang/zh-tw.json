@@ -1,0 +1,7 @@
+{
+  "maplayer-fastmap-terrain-fallback": "預先生成",
+  "maplayer-fastmap-rainfall": "降雨量",
+  "maplayer-fastmap-temperature": "溫度",
+  "maplayer-fastmap-forest-density": "森林",
+  "maplayer-fastmap-shrub-density": "灌木"
+}
