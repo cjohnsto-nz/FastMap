@@ -60,7 +60,7 @@ public sealed class FastMapTerrainFallbackLayer : MapLayer
 
     public static bool IsBackgroundGenerationActive => Volatile.Read(ref backgroundActive) != 0;
 
-    public override string Title => "Pregen";
+    public override string Title => Lang.Get("maplayer-fastmap-terrain-fallback");
 
     public override string LayerGroupCode => "fastmap-terrain-fallback";
 
@@ -88,7 +88,11 @@ public sealed class FastMapTerrainFallbackLayer : MapLayer
     public override void ComposeDialogExtras(GuiDialogWorldMap guiDialogWorldMap, GuiComposer compo)
     {
         string[] values = { NormalStyleCode, FogOfWarStyleCode };
-        string[] names = { "Normal", "Fog of War" };
+        string[] names =
+        {
+            Lang.Get("fastmap-pregen-palette-normal"),
+            Lang.Get("fastmap-pregen-palette-fogofwar")
+        };
         int selectedIndex = UseFogOfWarStyle ? 1 : 0;
         bool showSeasonSelector = IsColorAccurateWorldmap();
 
@@ -109,9 +113,9 @@ public sealed class FastMapTerrainFallbackLayer : MapLayer
 
         GuiComposer composer = capi.Gui.CreateCompo(ComposerCode, dialogBounds)
             .AddShadedDialogBG(insetBounds, withTitleBar: false, 5.0, 0.75f)
-            .AddDialogTitleBar("Pregen", () => guiDialogWorldMap.Composers[ComposerCode].Enabled = false)
+            .AddDialogTitleBar(Title, () => guiDialogWorldMap.Composers[ComposerCode].Enabled = false)
             .BeginChildElements(insetBounds)
-            .AddStaticText("Palette", CairoFont.WhiteSmallText(), paletteLabelBounds)
+            .AddStaticText(Lang.Get("fastmap-pregen-palette"), CairoFont.WhiteSmallText(), paletteLabelBounds)
             .AddDropDown(values, names, selectedIndex, OnPregenStyleChanged, dropdownBounds, DropdownCode);
 
         if (showSeasonSelector && seasonLabelBounds != null && seasonDropdownBounds != null)
@@ -134,30 +138,30 @@ public sealed class FastMapTerrainFallbackLayer : MapLayer
             };
             string[] seasonNames =
             {
-                "Auto",
-                "January",
-                "February",
-                "March",
-                "April",
-                "May",
-                "June",
-                "July",
-                "August",
-                "September",
-                "October",
-                "November",
-                "December"
+                Lang.Get("fastmap-pregen-season-auto"),
+                Lang.Get("fastmap-pregen-season-january"),
+                Lang.Get("fastmap-pregen-season-february"),
+                Lang.Get("fastmap-pregen-season-march"),
+                Lang.Get("fastmap-pregen-season-april"),
+                Lang.Get("fastmap-pregen-season-may"),
+                Lang.Get("fastmap-pregen-season-june"),
+                Lang.Get("fastmap-pregen-season-july"),
+                Lang.Get("fastmap-pregen-season-august"),
+                Lang.Get("fastmap-pregen-season-september"),
+                Lang.Get("fastmap-pregen-season-october"),
+                Lang.Get("fastmap-pregen-season-november"),
+                Lang.Get("fastmap-pregen-season-december")
             };
             int seasonIndex = Math.Clamp(SeasonOverrideMonth + 1, 0, 12);
             composer
-                .AddStaticText("Season", CairoFont.WhiteSmallText(), seasonLabelBounds)
+                .AddStaticText(Lang.Get("fastmap-pregen-season"), CairoFont.WhiteSmallText(), seasonLabelBounds)
                 .AddDropDown(seasonValues, seasonNames, seasonIndex, OnSeasonChanged, seasonDropdownBounds, SeasonDropdownCode);
         }
 
         guiDialogWorldMap.Composers[ComposerCode] = composer
-            .AddStaticText("Background", CairoFont.WhiteSmallText(), backgroundLabelBounds)
+            .AddStaticText(Lang.Get("fastmap-pregen-background"), CairoFont.WhiteSmallText(), backgroundLabelBounds)
             .AddHoverText(
-                "Pregenerate terrain while the map is closed. Will impact performance while generating.",
+                Lang.Get("fastmap-pregen-background-hover"),
                 CairoFont.WhiteSmallText(),
                 220,
                 backgroundLabelBounds,
