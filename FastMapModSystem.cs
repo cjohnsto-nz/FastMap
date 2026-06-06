@@ -2,12 +2,14 @@ using FastMap.Cache;
 using FastMap.Config;
 using FastMap.Map;
 using System;
+using System.Collections.Generic;
 #if FASTMAPHITCHDIAGNOSTICS
 using System.Diagnostics;
 #endif
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Datastructures;
+using Vintagestory.API.MathTools;
 using Vintagestory.API.Server;
 using Vintagestory.GameContent;
 
@@ -54,6 +56,7 @@ public sealed class FastMapModSystem : ModSystem
         RegisterHitchDiagnosticListener(api);
 #endif
         FastMapWorldMapGuard.Install(api.Logger);
+        FastMapCartographyTableCompatibility.Install(api);
 
         ReplaceTerrainLayerRegistration();
 
@@ -170,6 +173,27 @@ public sealed class FastMapModSystem : ModSystem
         }
 
         return TextCommandResult.Success(message);
+    }
+
+    public FastMapMapPieceImportResult ImportMapPieces(IReadOnlyDictionary<FastVec2i, MapPieceDB> pieces, string source = "external")
+    {
+        FastPageMapLayer? layer = FindFastMapLayer();
+        return layer == null
+            ? FastMapMapPieceImportResult.NotHandled
+            : layer.ImportMapPieces(pieces, source);
+    }
+
+    public bool TryGetMapPieces(IEnumerable<FastVec2i> coords, out Dictionary<FastVec2i, MapPieceDB> pieces)
+    {
+        pieces = new Dictionary<FastVec2i, MapPieceDB>();
+        FastPageMapLayer? layer = FindFastMapLayer();
+        return layer != null && layer.TryGetMapPieces(coords, out pieces);
+    }
+
+    public bool InvalidateMapPieces(IEnumerable<FastVec2i> coords, string source = "external")
+    {
+        FastPageMapLayer? layer = FindFastMapLayer();
+        return layer != null && layer.InvalidateMapPieces(coords, source);
     }
 
     private void OnConfigLibConfigSaved(string eventName, ref EnumHandling handling, IAttribute data)
@@ -564,6 +588,30 @@ public sealed class FastMapModSystem : ModSystem
         }
 
         return -1;
+    }
+
+    private FastPageMapLayer? FindFastMapLayer()
+    {
+        if (capi == null)
+        {
+            return null;
+        }
+
+        WorldMapManager? worldMapManager = capi.ModLoader.GetModSystem<WorldMapManager>(true);
+        if (worldMapManager == null)
+        {
+            return null;
+        }
+
+        for (int i = 0; i < worldMapManager.MapLayers.Count; i++)
+        {
+            if (worldMapManager.MapLayers[i] is FastPageMapLayer layer)
+            {
+                return layer;
+            }
+        }
+
+        return null;
     }
 
     private static int FindLayerIndexByFullName(WorldMapManager worldMapManager, string fullName)

@@ -60,6 +60,16 @@ internal sealed class FastMapPageDiskCache
         }
     }
 
+    public bool TryGetLastWriteTicks(FastVec2i pageKey, out long ticks)
+    {
+        ticks = 0;
+        bool found = false;
+        found |= TryGetLastWriteTicks(GetPath(v1RootPath, pageKey), ref ticks);
+        found |= TryGetLastWriteTicks(GetPath(v2RootPath, pageKey), ref ticks);
+        found |= TryGetLastWriteTicks(GetPath(v3RootPath, pageKey), ref ticks);
+        return found;
+    }
+
     public bool TryLoad(FastVec2i pageKey, out FastMapPageSnapshot snapshot)
     {
         return TryLoadV3(pageKey, out snapshot) || TryLoadV2(pageKey, out snapshot) || TryLoadV1(pageKey, out snapshot);
@@ -549,6 +559,24 @@ internal sealed class FastMapPageDiskCache
     private static string GetPath(string root, FastVec2i pageKey)
     {
         return Path.Combine(root, pageKey.X + "_" + pageKey.Y + ".fmp");
+    }
+
+    private static bool TryGetLastWriteTicks(string path, ref long ticks)
+    {
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return false;
+            }
+
+            ticks = Math.Max(ticks, File.GetLastWriteTimeUtc(path).Ticks);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
 }
