@@ -21,6 +21,32 @@
       }
     },
     {
+      "code": "PageMemoryBudget",
+      "type": "integer",
+      "default": 1024,
+      "clientSide": true,
+      "ingui": "Page memory budget",
+      "comment": "Maximum number of FastMap page components kept in RAM after GPU textures are evicted. Higher values make pan-back faster at the cost of memory.",
+      "range": {
+        "min": 16,
+        "max": 20000,
+        "step": 16
+      }
+    },
+    {
+      "code": "ReadyPageQueueBudget",
+      "type": "integer",
+      "default": 64,
+      "clientSide": true,
+      "ingui": "Ready page queue budget",
+      "comment": "Maximum number of loaded/generated page snapshots allowed to wait for main-thread upload. Keeps fallback generation from outrunning uploads and hoarding RAM.",
+      "range": {
+        "min": 4,
+        "max": 512,
+        "step": 4
+      }
+    },
+    {
       "code": "EnableTextureAtlas",
       "type": "boolean",
       "default": true,
@@ -61,6 +87,335 @@
       "comment": "When running .fastmap cleanupcache, keep the newest pages-vN folder in each world cache and delete only older page-version folders."
     },
     {
+      "code": "EnableVanillaMapDbWriteback",
+      "type": "boolean",
+      "default": true,
+      "clientSide": true,
+      "ingui": "Write vanilla map DB",
+      "comment": "Also write generated FastMap terrain tiles back to Vintage Story's vanilla map database so the vanilla map remains useful if FastMap is removed or needs to rebuild."
+    },
+    {
+      "code": "CleanupStaleVanillaMapDbSidecarsOnStartup",
+      "type": "boolean",
+      "default": true,
+      "clientSide": true,
+      "ingui": "Clean vanilla DB sidecars",
+      "comment": "Delete stale <world>.db-wal and <world>.db-shm files once on startup before FastMap opens the vanilla map database."
+    },
+    {
+      "type": "separator",
+      "title": "Experimental"
+    },
+    {
+      "code": "DisableTerrainSamplerFallbackLayer",
+      "type": "boolean",
+      "default": false,
+      "clientSide": true,
+      "ingui": "Disable Pregen map layer",
+      "comment": "Hide the synthetic Pregen terrain-sampler map layer even when Algernon's Terrain Sampler is detected. Existing FastMap terrain caching is unaffected."
+    },
+    {
+      "code": "EnableTerrainSamplerRainfallLayer",
+      "type": "boolean",
+      "default": false,
+      "clientSide": true,
+      "ingui": "Rainfall map layer",
+      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler rainfall values. Requires Algernon's Terrain Sampler 1.3.0+."
+    },
+    {
+      "code": "EnableTerrainSamplerTemperatureLayer",
+      "type": "boolean",
+      "default": false,
+      "clientSide": true,
+      "ingui": "Temperature map layer",
+      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler temperature values. Requires Algernon's Terrain Sampler 1.3.0+."
+    },
+    {
+      "code": "EnableTerrainSamplerForestDensityLayer",
+      "type": "boolean",
+      "default": false,
+      "clientSide": true,
+      "ingui": "Forest density map layer",
+      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler forest density values. Requires Algernon's Terrain Sampler 1.3.0+."
+    },
+    {
+      "code": "EnableTerrainSamplerShrubDensityLayer",
+      "type": "boolean",
+      "default": false,
+      "clientSide": true,
+      "ingui": "Shrub density map layer",
+      "comment": "Adds a toggleable world-map overlay generated from Algernon's Terrain Sampler shrub density values. Requires Algernon's Terrain Sampler 1.3.0+."
+    },
+    {
+      "code": "TerrainSamplerFallbackResolutionScale",
+      "type": "integer",
+      "default": 4,
+      "clientSide": true,
+      "ingui": "Fallback resolution scale",
+      "comment": "Synthetic terrain-sampler map resolution. 1 stores and samples every pixel; 4 stores one pixel per 4x4 page area; larger values are faster and smaller.",
+      "range": {
+        "min": 1,
+        "max": 32,
+        "step": 1
+      }
+    },
+    {
+      "code": "EnableTerrainSamplerFallbackTrueColor",
+      "type": "boolean",
+      "default": true,
+      "clientSide": true,
+      "ingui": "True-colour fallback probes",
+      "comment": "When true-colour world maps are enabled, use sparse loaded-surface block colour probes to improve synthetic terrain-sampler fallback pages without sampling every pixel."
+    },
+    {
+      "code": "TerrainSamplerFallbackTrueColorProbeStride",
+      "type": "integer",
+      "default": 4,
+      "clientSide": true,
+      "ingui": "True-colour probe stride",
+      "comment": "Sparse fallback true-colour probe spacing in low-resolution fallback cells. 4 means one loaded-surface colour probe per 4x4 fallback cells.",
+      "range": {
+        "min": 1,
+        "max": 32,
+        "step": 1
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackHeightOffset",
+      "type": "integer",
+      "default": 0,
+      "clientSide": true,
+      "ingui": "Fallback height offset",
+      "comment": "Global block-height offset applied only to synthetic Pregen terrain-sampler tiles. Positive values make sampled terrain render higher relative to sea level.",
+      "range": {
+        "min": -64,
+        "max": 64,
+        "step": 1
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackTerraPretyHeightOffset",
+      "type": "integer",
+      "default": 2,
+      "clientSide": true,
+      "ingui": "Terra Prety height offset",
+      "comment": "Additional block-height offset applied to synthetic Pregen tiles when Terra Prety is loaded. Added on top of the global fallback height offset.",
+      "range": {
+        "min": -64,
+        "max": 64,
+        "step": 1
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackWaterLevelOffset",
+      "type": "integer",
+      "default": -1,
+      "clientSide": true,
+      "ingui": "Fallback water level offset",
+      "comment": "Block-height offset applied to the sea-level cutoff used by synthetic Pregen water classification. With the default -1, sea level 220 treats terrain height 218 and below as water when using the exclusive cutoff.",
+      "range": {
+        "min": -64,
+        "max": 64,
+        "step": 1
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackSnowStartHeight",
+      "type": "integer",
+      "default": 250,
+      "clientSide": true,
+      "ingui": "Fallback snow height",
+      "comment": "Synthetic terrain-sampler fallback pixels at or above this height can use the snow palette when adjusted temperature is below vanilla's snow threshold.",
+      "range": {
+        "min": 1,
+        "max": 100000,
+        "step": 1
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackSeasonUploadBucketsPerYear",
+      "type": "integer",
+      "default": 12,
+      "clientSide": true,
+      "ingui": "Fallback season refreshes/year",
+      "comment": "How many times per in-game year uploaded Pregen fallback textures are re-tinted from the neutral disk cache. Higher values track seasons more smoothly but cause more GPU re-uploads.",
+      "range": {
+        "min": 1,
+        "max": 128,
+        "step": 1
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackWaterBaseColor",
+      "type": "text",
+      "default": "#012d48",
+      "clientSide": true,
+      "ingui": "Fallback water base colour",
+      "comment": "Base #RRGGBB colour used for synthetic Pregen water before rainfall, temperature, and value-noise overlays are applied."
+    },
+    {
+      "code": "TerrainSamplerFallbackWaterRainfallColor",
+      "type": "text",
+      "default": "#82c7df",
+      "clientSide": true,
+      "ingui": "Fallback water rainfall colour",
+      "comment": "Light-blue #RRGGBB overlay applied inversely by rainfall. 0% rainfall applies this at full alpha before strength scaling."
+    },
+    {
+      "code": "TerrainSamplerFallbackWaterRainfallStrength",
+      "type": "float",
+      "default": 1.0,
+      "clientSide": true,
+      "ingui": "Fallback water rainfall strength",
+      "comment": "Strength of the inverse-rainfall blue overlay. 0 disables it; 1 uses the configured colour at its calculated alpha; 2 exaggerates it before clamping.",
+      "range": {
+        "min": 0.0,
+        "max": 2.0,
+        "step": 0.05
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackWaterTemperatureColor",
+      "type": "text",
+      "default": "#b8894f",
+      "clientSide": true,
+      "ingui": "Fallback water temperature colour",
+      "comment": "Warm #RRGGBB overlay applied by adjusted temperature. 0% temperature applies no warmth."
+    },
+    {
+      "code": "TerrainSamplerFallbackWaterTemperatureStrength",
+      "type": "float",
+      "default": 1.0,
+      "clientSide": true,
+      "ingui": "Fallback water temp strength",
+      "comment": "Strength of the temperature warmth overlay. 0 disables it; 1 uses the configured colour at its calculated alpha; 2 exaggerates it before clamping.",
+      "range": {
+        "min": 0.0,
+        "max": 2.0,
+        "step": 0.05
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackWaterNoiseStrength",
+      "type": "float",
+      "default": 0.1,
+      "clientSide": true,
+      "ingui": "Fallback water noise",
+      "comment": "Strength of subtle deterministic value noise applied after rainfall and temperature overlays. 0 is perfectly flat.",
+      "range": {
+        "min": 0.0,
+        "max": 1.0,
+        "step": 0.01
+      }
+    },
+    {
+      "code": "EnableTrueColorAirSurfaceRepair",
+      "type": "boolean",
+      "default": true,
+      "clientSide": true,
+      "ingui": "Repair air true-colour surface",
+      "comment": "When true-colour map generation samples air at the rain-height surface, scan downward for a real block before colouring the pixel. This helps avoid white cave-mouth pixels."
+    },
+    {
+      "code": "TrueColorAirSurfaceRepairDepth",
+      "type": "integer",
+      "default": 32,
+      "clientSide": true,
+      "ingui": "Air surface repair depth",
+      "comment": "Maximum number of blocks below the rain-height surface to search for a real block when repairing air true-colour samples.",
+      "range": {
+        "min": 1,
+        "max": 64,
+        "step": 1
+      }
+    },
+    {
+      "code": "TrueColorAirFallbackColor",
+      "type": "text",
+      "default": "#282828",
+      "clientSide": true,
+      "ingui": "Air true-colour fallback",
+      "comment": "Hex colour used when true-colour map generation still resolves to air after the air-surface repair search."
+    },
+    {
+      "code": "TerrainSamplerFallbackMaxPagesPerSession",
+      "type": "integer",
+      "default": 2048,
+      "clientSide": true,
+      "ingui": "Fallback page limit",
+      "comment": "Maximum synthetic terrain-sampler pages FastMap may build per world session. Keeps the experiment bounded while testing.",
+      "range": {
+        "min": 0,
+        "max": 100000,
+        "step": 128
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackRadiusChunks",
+      "type": "integer",
+      "default": 0,
+      "clientSide": true,
+      "ingui": "Fallback radius (chunks)",
+      "comment": "Maximum chunk radius around the player where synthetic terrain-sampler pages may be built. Set to 0 for no radius limit.",
+      "range": {
+        "min": 0,
+        "max": 8192,
+        "step": 32
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackBackgroundPagesPerPass",
+      "type": "integer",
+      "default": 16,
+      "clientSide": true,
+      "ingui": "Background fallback pages/pass",
+      "comment": "Maximum missing fallback pages to queue per background generation pass while the world map is closed.",
+      "range": {
+        "min": 1,
+        "max": 1024,
+        "step": 1
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackMaxParallelBuilds",
+      "type": "integer",
+      "default": 2,
+      "clientSide": true,
+      "ingui": "Fallback parallel builds",
+      "comment": "Maximum terrain-sampler fallback pages to build in parallel. Higher values fill distant fallback maps faster but can compete for CPU.",
+      "range": {
+        "min": 1,
+        "max": 16,
+        "step": 1
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackMaxRetries",
+      "type": "integer",
+      "default": 3,
+      "clientSide": true,
+      "ingui": "Fallback max retries",
+      "comment": "Maximum retry attempts for a synthetic terrain-sampler page if cache load or generation fails.",
+      "range": {
+        "min": 0,
+        "max": 16,
+        "step": 1
+      }
+    },
+    {
+      "code": "TerrainSamplerFallbackRetryDelayMilliseconds",
+      "type": "integer",
+      "default": 5000,
+      "clientSide": true,
+      "ingui": "Fallback retry delay",
+      "comment": "Delay before retrying a failed synthetic terrain-sampler page.",
+      "range": {
+        "min": 100,
+        "max": 120000,
+        "step": 500
+      }
+    },
+    {
       "code": "ViewportLoadScale",
       "type": "float",
       "default": 1.5,
@@ -71,6 +426,19 @@
         "min": 1.0,
         "max": 4.0,
         "step": 0.05
+      }
+    },
+    {
+      "code": "ViewportPageRetentionRings",
+      "type": "integer",
+      "default": 1,
+      "clientSide": true,
+      "ingui": "Viewport retention rings",
+      "comment": "How many extra page rings around the current loaded viewport may remain queued. 0 drops all queued page work outside the current viewport rectangle.",
+      "range": {
+        "min": 0,
+        "max": 32,
+        "step": 1
       }
     },
     {
@@ -233,6 +601,35 @@
         "min": 1.0,
         "max": 120.0,
         "step": 1.0
+      }
+    },
+    {
+      "code": "LogTrueColorBrightSamples",
+      "type": "boolean",
+      "default": false,
+      "clientSide": true,
+      "ingui": "Log bright true-colour blocks",
+      "comment": "Log the first near-white true-colour sample per block type, including base/random/final colours and block colour-map metadata. Useful for diagnosing white rock map pixels."
+    },
+    {
+      "code": "EnableHitchDiagnostics",
+      "type": "boolean",
+      "default": false,
+      "clientSide": true,
+      "ingui": "Log hitch diagnostics",
+      "comment": "Log slow FastMap tick/render/off-thread passes to client-main.log. Leave disabled outside diagnostics."
+    },
+    {
+      "code": "HitchDiagnosticThresholdMilliseconds",
+      "type": "integer",
+      "default": 100,
+      "clientSide": true,
+      "ingui": "Hitch threshold (ms)",
+      "comment": "Minimum FastMap pass duration to log when hitch diagnostics are enabled.",
+      "range": {
+        "min": 16,
+        "max": 5000,
+        "step": 10
       }
     }
   ]

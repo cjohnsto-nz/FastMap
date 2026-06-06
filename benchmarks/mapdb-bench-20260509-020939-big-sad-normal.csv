@@ -1,0 +1,9 @@
+﻿world,stage,scenario,operations,rowsOrBytes,totalMs,msPerOperation,pages,detail
+"big-sad-normal","metadata","db_bytes",1,513978368,0.0000,0.000000,0,""
+"big-sad-normal","metadata","mappiece_rows",1,41777,0.0000,0.000000,0,""
+"big-sad-normal","scan_positions","all_rows",1,41777,98.3626,98.362600,0,""
+"big-sad-normal","metadata","selected_pages",208,41777,0.0000,0.000000,0,"totalPages=208"
+"big-sad-normal","full_scan_decode_group","all_rows",1,41777,1346.3620,1346.362000,208,"pixels=42779648;deserialized=41777;blobMs=43.96;deserializeMs=991.29"
+"big-sad-normal","point_probe_known_pages","selected_pages",208,41777,1468.9445,7.062233,208,"pixels=42779648;deserialized=41777;sqliteQueries=41777;blobMs=54.75;deserializeMs=850.74;copyMs=5.91"
+"big-sad-normal","page_in_query","selected_pages",208,41777,1243.5503,5.978607,208,"pixels=42779648;deserialized=41777;sqliteQueries=208;blobMs=39.83;deserializeMs=877.65;copyMs=5.69"
+"big-sad-normal","page_in_query_parallel","selected_pages",208,41777,724.2515,3.481978,208,"pixels=42779648;deserialized=41777;sqliteQueries=208;blobMs=77.16;deserializeMs=1541.83;copyMs=10.22"

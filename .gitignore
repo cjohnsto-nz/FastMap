@@ -2,3 +2,9 @@ bin/
 obj/
 .vs/
 *.user
+_tmp*
+_ilspy*
+.tools/
+benchmarks/*.nettrace
+benchmarks/*.gcdump
+benchmarks/*.speedscope.json

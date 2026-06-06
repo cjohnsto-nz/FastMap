@@ -1,3 +1,4 @@
+using System;
 using Vintagestory.API.Client;
 using Vintagestory.API.MathTools;
 using Vintagestory.GameContent;
@@ -13,7 +14,8 @@ internal sealed class FastMapPageComponent : MapComponent
 
     private readonly Vec3d worldPos;
     private Vec2f viewPos = new();
-    private readonly int[] pixels = new int[PixelCount];
+    private int[]? pixels;
+    private int texturePixelSize = PageSize;
     private readonly uint[] validRows = new uint[ChunksPerPage];
     private LoadedTexture? texture;
     private FastMapAtlasSlot? atlasSlot;
@@ -36,6 +38,12 @@ internal sealed class FastMapPageComponent : MapComponent
 
     public bool HasGpuTexture => atlasSlot != null || (texture != null && !texture.Disposed);
 
+    public bool HasPixelBuffer => pixels != null;
+
+    public long PixelBufferBytes => pixels == null ? 0 : (long)pixels.Length * sizeof(int);
+
+    public int TexturePixelSize => texturePixelSize;
+
     public long LastTouchedMs { get; set; }
 
     public bool HasAnyValidChunks
@@ -54,6 +62,22 @@ internal sealed class FastMapPageComponent : MapComponent
         }
     }
 
+    public bool HasAllValidChunks
+    {
+        get
+        {
+            for (int i = 0; i < validRows.Length; i++)
+            {
+                if (validRows[i] != uint.MaxValue)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+    }
+
     public bool IsChunkValid(int localChunkX, int localChunkZ)
     {
         if (localChunkX < 0 || localChunkX >= ChunksPerPage || localChunkZ < 0 || localChunkZ >= ChunksPerPage)
@@ -66,7 +90,23 @@ internal sealed class FastMapPageComponent : MapComponent
 
     public void ApplySnapshot(FastMapPageSnapshot snapshot)
     {
-        System.Array.Copy(snapshot.Pixels, pixels, pixels.Length);
+        if (snapshot.IsLowResolution)
+        {
+            texturePixelSize = FastMapTerrainFallbackDiskCache.LowResolutionSize(snapshot.ResolutionScale);
+            pixels = snapshot.Pixels;
+        }
+        else if (snapshot.TransferPixelsToPage)
+        {
+            texturePixelSize = PageSize;
+            pixels = snapshot.Pixels;
+        }
+        else
+        {
+            texturePixelSize = PageSize;
+            int[] pagePixels = EnsurePixelBuffer();
+            System.Array.Copy(snapshot.Pixels, pagePixels, pagePixels.Length);
+        }
+
         System.Array.Copy(snapshot.ValidRows, validRows, validRows.Length);
         visibleChunksMeshDirty = true;
     }
@@ -80,12 +120,41 @@ internal sealed class FastMapPageComponent : MapComponent
             return;
         }
 
+        int[] pagePixels = EnsurePixelBuffer();
         int dstX = localChunkX * ChunkSize;
         int dstY = localChunkZ * ChunkSize;
 
         for (int row = 0; row < ChunkSize; row++)
         {
-            System.Array.Copy(tilePixels, row * ChunkSize, pixels, (dstY + row) * PageSize + dstX, ChunkSize);
+            System.Array.Copy(tilePixels, row * ChunkSize, pagePixels, (dstY + row) * PageSize + dstX, ChunkSize);
+        }
+
+        uint bit = 1u << localChunkX;
+        if ((validRows[localChunkZ] & bit) == 0)
+        {
+            validRows[localChunkZ] |= bit;
+            visibleChunksMeshDirty = true;
+        }
+    }
+
+    public void SetLowResolutionChunk(FastVec2i chunkCoord, int[] tilePixels, int chunkPixelSize)
+    {
+        int localChunkX = chunkCoord.X - BaseChunkCoord.X;
+        int localChunkZ = chunkCoord.Y - BaseChunkCoord.Y;
+        if (localChunkX < 0 || localChunkX >= ChunksPerPage || localChunkZ < 0 || localChunkZ >= ChunksPerPage)
+        {
+            return;
+        }
+
+        chunkPixelSize = Math.Clamp(chunkPixelSize, 1, ChunkSize);
+        int lowResolutionPageSize = chunkPixelSize * ChunksPerPage;
+        int[] pagePixels = EnsurePixelBuffer(lowResolutionPageSize);
+        int dstX = localChunkX * chunkPixelSize;
+        int dstY = localChunkZ * chunkPixelSize;
+
+        for (int row = 0; row < chunkPixelSize; row++)
+        {
+            System.Array.Copy(tilePixels, row * chunkPixelSize, pagePixels, (dstY + row) * lowResolutionPageSize + dstX, chunkPixelSize);
         }
 
         uint bit = 1u << localChunkX;
@@ -98,26 +167,51 @@ internal sealed class FastMapPageComponent : MapComponent
 
     public FastMapPageSnapshot CreateSnapshot()
     {
-        int[] pixelCopy = new int[pixels.Length];
+        int[] pagePixels = EnsurePixelBuffer();
+        int[] pixelCopy = new int[pagePixels.Length];
         uint[] validCopy = new uint[validRows.Length];
-        System.Array.Copy(pixels, pixelCopy, pixels.Length);
+        System.Array.Copy(pagePixels, pixelCopy, pagePixels.Length);
         System.Array.Copy(validRows, validCopy, validRows.Length);
-        return new FastMapPageSnapshot(PageKey, validCopy, pixelCopy);
+        int resolutionScale = Math.Max(1, (PageSize + texturePixelSize - 1) / texturePixelSize);
+        return new FastMapPageSnapshot(PageKey, validCopy, pixelCopy, synthetic: resolutionScale > 1, resolutionScale: resolutionScale);
+    }
+
+    public int[]? CopyPixels()
+    {
+        if (pixels == null)
+        {
+            return null;
+        }
+
+        int[] copy = new int[pixels.Length];
+        System.Array.Copy(pixels, copy, pixels.Length);
+        return copy;
     }
 
     public void Upload()
     {
-        if (!HasAnyValidChunks)
+        Upload(pixels);
+    }
+
+    public void Upload(int[]? uploadPixels)
+    {
+        if (!HasAnyValidChunks || pixels == null)
         {
             return;
         }
 
-        if (texture == null || texture.Disposed)
+        uploadPixels ??= pixels;
+        if (uploadPixels.Length != texturePixelSize * texturePixelSize)
         {
-            texture = new LoadedTexture(capi, 0, PageSize, PageSize);
+            throw new ArgumentException("FastMap page upload dimensions must match the page texture size.", nameof(uploadPixels));
         }
 
-        capi.Render.LoadOrUpdateTextureFromRgba(pixels, false, 0, ref texture);
+        if (texture == null || texture.Disposed)
+        {
+            texture = new LoadedTexture(capi, 0, texturePixelSize, texturePixelSize);
+        }
+
+        capi.Render.LoadOrUpdateTextureFromRgba(uploadPixels, false, 0, ref texture);
         capi.Render.BindTexture2d(texture.TextureId);
         capi.Render.GlGenerateTex2DMipmaps();
         RefreshVisibleChunksMesh();
@@ -125,9 +219,20 @@ internal sealed class FastMapPageComponent : MapComponent
 
     public void Upload(FastMapTextureAtlas atlas)
     {
-        if (!HasAnyValidChunks)
+        Upload(atlas, pixels);
+    }
+
+    public void Upload(FastMapTextureAtlas atlas, int[]? uploadPixels)
+    {
+        if (!HasAnyValidChunks || pixels == null)
         {
             return;
+        }
+
+        uploadPixels ??= pixels;
+        if (uploadPixels.Length != texturePixelSize * texturePixelSize)
+        {
+            throw new ArgumentException("FastMap atlas upload dimensions must match the page texture size.", nameof(uploadPixels));
         }
 
         if (texture != null && !texture.Disposed)
@@ -137,13 +242,18 @@ internal sealed class FastMapPageComponent : MapComponent
         }
 
         FastMapAtlasSlot? previousSlot = atlasSlot;
-        atlasSlot = atlas.Upload(PageKey, pixels);
+        atlasSlot = atlas.Upload(PageKey, uploadPixels, texturePixelSize);
         if (previousSlot != atlasSlot)
         {
             visibleChunksMeshDirty = true;
         }
 
         RefreshVisibleChunksMesh();
+    }
+
+    public void ReleasePixelBuffer()
+    {
+        pixels = null;
     }
 
     public override void Render(GuiElementMap map, float dt)
@@ -169,13 +279,23 @@ internal sealed class FastMapPageComponent : MapComponent
         }
 
         map.TranslateWorldPosToViewPos(worldPos, ref viewPos);
+        Vec2f bottomRightViewPos = new();
+        map.TranslateWorldPosToViewPos(new Vec3d(worldPos.X + PageSize, 0, worldPos.Z + PageSize), ref bottomRightViewPos);
+
+        float x1 = (float)Math.Floor(map.Bounds.renderX + viewPos.X);
+        float y1 = (float)Math.Floor(map.Bounds.renderY + viewPos.Y);
+        float x2 = (float)Math.Ceiling(map.Bounds.renderX + bottomRightViewPos.X);
+        float y2 = (float)Math.Ceiling(map.Bounds.renderY + bottomRightViewPos.Y);
+        float width = Math.Max(1f, x2 - x1);
+        float height = Math.Max(1f, y2 - y1);
+
         capi.Render.Render2DTexture(
             visibleChunksMesh,
             textureId,
-            (float)(int)(map.Bounds.renderX + viewPos.X),
-            (float)(int)(map.Bounds.renderY + viewPos.Y),
-            (float)(int)(PageSize * map.ZoomLevel),
-            (float)(int)(PageSize * map.ZoomLevel),
+            x1,
+            y1,
+            width,
+            height,
             50f
         );
     }
@@ -248,6 +368,23 @@ internal sealed class FastMapPageComponent : MapComponent
         }
 
         visibleChunksMesh = capi.Render.UploadMesh(mesh);
+    }
+
+    private int[] EnsurePixelBuffer()
+    {
+        return EnsurePixelBuffer(PageSize);
+    }
+
+    private int[] EnsurePixelBuffer(int pixelSize)
+    {
+        pixelSize = Math.Clamp(pixelSize, 1, PageSize);
+        if (pixels == null || texturePixelSize != pixelSize)
+        {
+            texturePixelSize = pixelSize;
+            pixels = new int[pixelSize * pixelSize];
+        }
+
+        return pixels;
     }
 
     private int CountValidRuns()

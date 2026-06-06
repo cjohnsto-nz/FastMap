@@ -2,17 +2,14 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.RegularExpressions;
-using Vintagestory.API.Config;
 
 namespace FastMap.Cache;
 
 internal static partial class FastMapCacheCleanup
 {
-    private const string FastMapDirectoryName = "FastMap";
-
     public static FastMapCacheCleanupResult CleanupVersionedPageCaches(bool keepLatestPageVersion)
     {
-        string rootPath = Path.Combine(GamePaths.DataPath, FastMapDirectoryName);
+        string rootPath = FastMapStoragePaths.RootPath;
         FastMapCacheCleanupResult result = new();
         if (!Directory.Exists(rootPath))
         {

@@ -1,9 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Numerics;
 using System.Runtime.InteropServices;
+using FastMap.Cache;
 using K4os.Compression.LZ4;
-using Vintagestory.API.Config;
 using Vintagestory.API.MathTools;
 
 namespace FastMap.Map;
@@ -30,21 +31,34 @@ internal sealed class FastMapPageDiskCache
     private readonly bool enableCompression;
     private readonly bool useFilteredCache;
     private readonly bool useHighCompression;
+    private readonly object knownPageFilesLock = new();
+    private readonly HashSet<FastVec2i> knownPageFiles = new();
 
     public FastMapPageDiskCache(string savegameIdentifier, bool enableCompression, bool useFilteredCache, bool useHighCompression)
     {
         this.enableCompression = enableCompression;
         this.useFilteredCache = useFilteredCache;
         this.useHighCompression = useHighCompression;
-        string worldPath = Path.Combine(GamePaths.DataPath, "FastMap", SanitizePathPart(savegameIdentifier));
+        string worldPath = FastMapStoragePaths.GetWorldPath(savegameIdentifier);
         v1RootPath = Path.Combine(worldPath, "pages-v1");
         v2RootPath = Path.Combine(worldPath, "pages-v2");
         v3RootPath = Path.Combine(worldPath, "pages-v3");
         rootPath = enableCompression ? (useFilteredCache ? v3RootPath : v2RootPath) : v1RootPath;
-        GamePaths.EnsurePathExists(rootPath);
+        Directory.CreateDirectory(rootPath);
+        IndexExistingPages(v1RootPath);
+        IndexExistingPages(v2RootPath);
+        IndexExistingPages(v3RootPath);
     }
 
     public string RootPath => rootPath;
+
+    public bool MightContain(FastVec2i pageKey)
+    {
+        lock (knownPageFilesLock)
+        {
+            return knownPageFiles.Contains(pageKey);
+        }
+    }
 
     public bool TryLoad(FastVec2i pageKey, out FastMapPageSnapshot snapshot)
     {
@@ -108,6 +122,7 @@ internal sealed class FastMapPageDiskCache
         }
 
         File.Move(tmpPath, path, overwrite: true);
+        MarkPageFileKnown(snapshot.PageKey);
     }
 
     private void SaveV3(FastMapPageSnapshot snapshot)
@@ -146,6 +161,7 @@ internal sealed class FastMapPageDiskCache
         }
 
         File.Move(tmpPath, path, overwrite: true);
+        MarkPageFileKnown(snapshot.PageKey);
     }
 
     private void SaveV1(FastMapPageSnapshot snapshot)
@@ -172,6 +188,55 @@ internal sealed class FastMapPageDiskCache
         }
 
         File.Move(tmpPath, path, overwrite: true);
+        MarkPageFileKnown(snapshot.PageKey);
+    }
+
+    private void IndexExistingPages(string path)
+    {
+        if (!Directory.Exists(path))
+        {
+            return;
+        }
+
+        foreach (string file in Directory.EnumerateFiles(path, "*.fmp"))
+        {
+            if (TryParsePageKey(Path.GetFileNameWithoutExtension(file), out FastVec2i pageKey))
+            {
+                MarkPageFileKnown(pageKey);
+            }
+        }
+    }
+
+    private void MarkPageFileKnown(FastVec2i pageKey)
+    {
+        lock (knownPageFilesLock)
+        {
+            knownPageFiles.Add(pageKey);
+        }
+    }
+
+    private static bool TryParsePageKey(string? fileName, out FastVec2i pageKey)
+    {
+        pageKey = default;
+        if (string.IsNullOrEmpty(fileName))
+        {
+            return false;
+        }
+
+        int separator = fileName.IndexOf('_');
+        if (separator <= 0 || separator >= fileName.Length - 1)
+        {
+            return false;
+        }
+
+        if (!int.TryParse(fileName.AsSpan(0, separator), out int x)
+            || !int.TryParse(fileName.AsSpan(separator + 1), out int y))
+        {
+            return false;
+        }
+
+        pageKey = new FastVec2i(x, y);
+        return true;
     }
 
     private bool TryLoadV3(FastVec2i pageKey, out FastMapPageSnapshot snapshot)
@@ -228,7 +293,7 @@ internal sealed class FastMapPageDiskCache
             byte[] rawChunkBytes = UnshuffleChannels(filteredBytes);
             int[] pixels = new int[PixelCount];
             RestoreSparseChunkPayload(validRows, rawChunkBytes, pixels);
-            snapshot = new FastMapPageSnapshot(pageKey, validRows, pixels);
+            snapshot = new FastMapPageSnapshot(pageKey, validRows, pixels, transferPixelsToPage: true);
             return snapshot.HasAnyValidChunks;
         }
         catch
@@ -290,7 +355,7 @@ internal sealed class FastMapPageDiskCache
 
             int[] pixels = new int[PixelCount];
             RestoreSparseChunkPayload(validRows, rawChunkBytes, pixels);
-            snapshot = new FastMapPageSnapshot(pageKey, validRows, pixels);
+            snapshot = new FastMapPageSnapshot(pageKey, validRows, pixels, transferPixelsToPage: true);
             return snapshot.HasAnyValidChunks;
         }
         catch
@@ -339,7 +404,7 @@ internal sealed class FastMapPageDiskCache
 
             int[] pixels = new int[PixelCount];
             MemoryMarshal.Cast<byte, int>(pixelBytes).CopyTo(pixels);
-            snapshot = new FastMapPageSnapshot(pageKey, validRows, pixels);
+            snapshot = new FastMapPageSnapshot(pageKey, validRows, pixels, transferPixelsToPage: true);
             return snapshot.HasAnyValidChunks;
         }
         catch
@@ -486,19 +551,4 @@ internal sealed class FastMapPageDiskCache
         return Path.Combine(root, pageKey.X + "_" + pageKey.Y + ".fmp");
     }
 
-    private static string SanitizePathPart(string value)
-    {
-        char[] invalid = Path.GetInvalidFileNameChars();
-        char[] chars = value.ToCharArray();
-
-        for (int i = 0; i < chars.Length; i++)
-        {
-            if (Array.IndexOf(invalid, chars[i]) >= 0)
-            {
-                chars[i] = '_';
-            }
-        }
-
-        return new string(chars);
-    }
 }
