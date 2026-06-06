@@ -89,10 +89,10 @@
     {
       "code": "EnableVanillaMapDbWriteback",
       "type": "boolean",
-      "default": false,
+      "default": true,
       "clientSide": true,
       "ingui": "Write vanilla map DB",
-      "comment": "Also write generated FastMap terrain tiles back to Vintage Story's vanilla map database. Disabled by default so FastMap only writes its own page cache."
+      "comment": "Also write generated FastMap terrain tiles back to Vintage Story's vanilla map database so the vanilla map remains useful if FastMap is removed or needs to rebuild."
     },
     {
       "code": "CleanupStaleVanillaMapDbSidecarsOnStartup",
