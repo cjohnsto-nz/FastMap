@@ -27,6 +27,14 @@ On true-colour worlds, the Pregen settings also include a season selector. `Auto
 
 Optional Terrain Sampler overlay layers can be enabled in config for `Rainfall`, `Temperature`, `Forest`, and `Shrubs`. These overlays share low-resolution sampler pages and are disabled by default.
 
+## Map Mod Compatibility
+
+Fast Map keeps Vintage Story's vanilla `Maps/<world>.db` as the durable map-piece store. This lets the vanilla map data remain useful if Fast Map is removed, and gives other map mods a stable compatibility target.
+
+For runtime compatibility, Fast Map exposes a small map-piece facade for importing, reading, and invalidating vanilla `MapPieceDB` chunks. Other mods should use this facade when Fast Map is present instead of reflecting private `ChunkMapLayer` fields.
+
+Fast Map also detects external edits to the vanilla map DB and refreshes visible terrain pages from the newer vanilla map pieces instead of serving stale page-cache files. K's Cartography Table is supported through a targeted compatibility shim that routes table map downloads through Fast Map's import path.
+
 ## Things To Know
 
 - Fast Map is client-side only. Servers do not need to install it.
@@ -37,6 +45,7 @@ Optional Terrain Sampler overlay layers can be enabled in config for `Rainfall`,
 - Fast Map uses GPU texture atlases by default to reduce texture object churn when many cached pages are visible.
 - Cached page files use a sparse LZ4-compressed format by default, but very large explored worlds can still use noticeable disk space. Removing the `VintagestoryData/ModData/FastMap/<world-id>` folder resets Fast Map's cache for that world.
 - Existing cache data from older Fast Map builds is migrated automatically from `VintagestoryData/FastMap` to `VintagestoryData/ModData/FastMap` on startup.
+- Fast Map preserves the vanilla map database and watches for external map-piece writes from other mods.
 - Config Lib is supported. If Config Lib is installed, Fast Map settings are available in the in-game mod settings UI.
 - Config reloads are handled without tearing down the live Fast Map terrain layer. Constructor-only settings apply after the next world load; layer registration settings update safely.
 - Localisation files are packaged for the map layer labels and Pregen controls.

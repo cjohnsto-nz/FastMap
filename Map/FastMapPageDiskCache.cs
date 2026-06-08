@@ -60,6 +60,43 @@ internal sealed class FastMapPageDiskCache
         }
     }
 
+    public bool TryGetLastWriteTicks(FastVec2i pageKey, out long ticks)
+    {
+        ticks = 0;
+        bool found = false;
+        found |= TryGetLastWriteTicks(GetPath(v1RootPath, pageKey), ref ticks);
+        found |= TryGetLastWriteTicks(GetPath(v2RootPath, pageKey), ref ticks);
+        found |= TryGetLastWriteTicks(GetPath(v3RootPath, pageKey), ref ticks);
+        return found;
+    }
+
+    public int Delete(FastVec2i pageKey)
+    {
+        int deleted = 0;
+        deleted += DeletePageFile(GetPath(v1RootPath, pageKey));
+        deleted += DeletePageFile(GetPath(v2RootPath, pageKey));
+        deleted += DeletePageFile(GetPath(v3RootPath, pageKey));
+        lock (knownPageFilesLock)
+        {
+            knownPageFiles.Remove(pageKey);
+        }
+
+        return deleted;
+    }
+
+    public int DeleteAll()
+    {
+        int deleted = DeleteCacheFiles(v1RootPath);
+        deleted += DeleteCacheFiles(v2RootPath);
+        deleted += DeleteCacheFiles(v3RootPath);
+        lock (knownPageFilesLock)
+        {
+            knownPageFiles.Clear();
+        }
+
+        return deleted;
+    }
+
     public bool TryLoad(FastVec2i pageKey, out FastMapPageSnapshot snapshot)
     {
         return TryLoadV3(pageKey, out snapshot) || TryLoadV2(pageKey, out snapshot) || TryLoadV1(pageKey, out snapshot);
@@ -549,6 +586,63 @@ internal sealed class FastMapPageDiskCache
     private static string GetPath(string root, FastVec2i pageKey)
     {
         return Path.Combine(root, pageKey.X + "_" + pageKey.Y + ".fmp");
+    }
+
+    private static bool TryGetLastWriteTicks(string path, ref long ticks)
+    {
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return false;
+            }
+
+            ticks = Math.Max(ticks, File.GetLastWriteTimeUtc(path).Ticks);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static int DeleteCacheFiles(string path)
+    {
+        if (!Directory.Exists(path))
+        {
+            return 0;
+        }
+
+        int deleted = 0;
+        foreach (string file in Directory.EnumerateFiles(path, "*.fmp"))
+        {
+            deleted += DeletePageFile(file);
+        }
+
+        foreach (string file in Directory.EnumerateFiles(path, "*.fmp.tmp"))
+        {
+            deleted += DeletePageFile(file);
+        }
+
+        return deleted;
+    }
+
+    private static int DeletePageFile(string path)
+    {
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return 0;
+            }
+
+            File.Delete(path);
+            return 1;
+        }
+        catch
+        {
+            return 0;
+        }
     }
 
 }
