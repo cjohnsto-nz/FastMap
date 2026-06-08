@@ -84,6 +84,8 @@ public sealed class FastMapModSystem : ModSystem
 
     private void RegisterClientCommands(ICoreClientAPI api)
     {
+        RegisterVanillaMapCommands(api);
+
         api.ChatCommands.Create("fastmap")
             .WithDescription("FastMap cache tools")
             .RequiresPlayer()
@@ -97,6 +99,19 @@ public sealed class FastMapModSystem : ModSystem
                 .WithDescription("Report FastMap sea-level diagnostics")
                 .WithAdditionalInformation("Shows the world sea level FastMap uses for pregen, plus the terrain sampler height at your current position when available.")
                 .HandleWith(OnSeaLevelCommand)
+            .EndSubCommand();
+    }
+
+    private void RegisterVanillaMapCommands(ICoreClientAPI api)
+    {
+        api.ChatCommands.GetOrCreate("map")
+            .BeginSubCommand("purgedb")
+                .WithDescription("Purge the vanilla map DB and FastMap terrain page cache")
+                .HandleWith(OnMapPurgeDbCommand)
+            .EndSubCommand()
+            .BeginSubCommand("redraw")
+                .WithDescription("Redraw visible FastMap terrain map chunks")
+                .HandleWith(OnMapRedrawCommand)
             .EndSubCommand();
     }
 
@@ -115,6 +130,32 @@ public sealed class FastMapModSystem : ModSystem
         return result.Failures == 0
             ? TextCommandResult.Success(summary)
             : TextCommandResult.Error(summary);
+    }
+
+    private TextCommandResult OnMapPurgeDbCommand(TextCommandCallingArgs args)
+    {
+        FastPageMapLayer? layer = FindFastMapLayer();
+        if (layer == null)
+        {
+            return TextCommandResult.Error("FastMap terrain layer is not available.");
+        }
+
+        string message = layer.PurgeVanillaMapDatabaseAndFastMapCache();
+        capi?.Logger.Notification("[FastMap] {0}", message);
+        return TextCommandResult.Success(message);
+    }
+
+    private TextCommandResult OnMapRedrawCommand(TextCommandCallingArgs args)
+    {
+        FastPageMapLayer? layer = FindFastMapLayer();
+        if (layer == null)
+        {
+            return TextCommandResult.Error("FastMap terrain layer is not available.");
+        }
+
+        string message = layer.RedrawVisibleMapPages();
+        capi?.Logger.Notification("[FastMap] {0}", message);
+        return TextCommandResult.Success(message);
     }
 
     private TextCommandResult OnSeaLevelCommand(TextCommandCallingArgs args)

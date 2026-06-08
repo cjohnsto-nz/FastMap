@@ -699,6 +699,116 @@ public sealed class FastPageMapLayer : RGBMapLayer
         return true;
     }
 
+    public string PurgeVanillaMapDatabaseAndFastMapCache()
+    {
+        if (disposed)
+        {
+            return "FastMap terrain layer is already disposed.";
+        }
+
+        string dbStatus;
+        lock (dbLock)
+        {
+            if (mapdb == null)
+            {
+                dbStatus = "vanilla map DB unavailable";
+            }
+            else if (!mapDbWritable)
+            {
+                dbStatus = "vanilla map DB opened read-only";
+            }
+            else
+            {
+                try
+                {
+                    mapdb.Purge();
+                    dbStatus = "vanilla map DB purged";
+                }
+                catch (Exception ex)
+                {
+                    dbStatus = $"vanilla map DB purge failed: {ex.Message}";
+                }
+            }
+
+            mapDbKnownPositions = null;
+            mapDbKnownPageKeys = null;
+            knownMapDbWriteTicks = GetCurrentMapDbWriteTicks();
+            externalMapDbChangeTicks = 0;
+        }
+
+        lock (pageSaveLock)
+        {
+            pendingPageSaves.Clear();
+            pendingTileSaves.Clear();
+        }
+
+        ClearTerrainQueues();
+        int loadedPages = pages.Count;
+        foreach (FastMapPageComponent page in pages.Values)
+        {
+            page.DisposeTexture();
+        }
+
+        pages.Clear();
+        chunksKnownValid.Clear();
+        lock (surfaceTileCacheLock)
+        {
+            surfaceTileCache.Clear();
+        }
+
+        int deletedFiles = pageDiskCache.DeleteAll();
+        return $"Ok, {dbStatus}; cleared {loadedPages} loaded FastMap pages and deleted {deletedFiles} FastMap terrain page cache files.";
+    }
+
+    public string RedrawVisibleMapPages()
+    {
+        if (disposed)
+        {
+            return "FastMap terrain layer is already disposed.";
+        }
+
+        HashSet<FastVec2i> pagesToRedraw = new(visiblePageKeys);
+        if (pagesToRedraw.Count == 0)
+        {
+            return "No visible FastMap terrain chunks to redraw.";
+        }
+
+        HashSet<FastVec2i> chunksToRedraw = ChunksForPages(pagesToRedraw);
+        if (chunksToRedraw.Count == 0)
+        {
+            return "No valid FastMap terrain chunks found in visible pages.";
+        }
+
+        DiscardTerrainWorkForPages(pagesToRedraw);
+        DiscardRepairWorkForChunks(chunksToRedraw);
+        int deletedFiles = 0;
+        foreach (FastVec2i pageKey in pagesToRedraw)
+        {
+            deletedFiles += pageDiskCache.Delete(pageKey);
+            InvalidateTerrainPage(pageKey, queueReloadIfVisible: false);
+        }
+
+        lock (pageSaveLock)
+        {
+            foreach (FastVec2i pageKey in pagesToRedraw)
+            {
+                pendingPageSaves.Remove(pageKey);
+            }
+
+            foreach (FastVec2i chunkCoord in chunksToRedraw)
+            {
+                pendingTileSaves.Remove(chunkCoord);
+            }
+        }
+
+        foreach (FastVec2i chunkCoord in chunksToRedraw)
+        {
+            QueueChunkRepair(chunkCoord, force: true, reason: "mapredraw");
+        }
+
+        return $"Redrawing FastMap terrain for {chunksToRedraw.Count} visible chunks across {pagesToRedraw.Count} pages; deleted {deletedFiles} stale visible page cache files.";
+    }
+
     private void DisposeResources()
     {
         if (disposed)
@@ -5050,6 +5160,204 @@ public sealed class FastPageMapLayer : RGBMapLayer
         {
             pendingPageSaves.Clear();
             pendingTileSaves.Clear();
+        }
+    }
+
+    private void ClearTerrainQueues()
+    {
+        lock (pageLoadLock)
+        {
+            pageLoadQueue.Clear();
+            queuedPageLoads.Clear();
+            queuedPageLoadPriorities.Clear();
+            knownMissingPages.Clear();
+        }
+
+        while (readyPages.TryDequeue(out _))
+        {
+        }
+
+        while (readyPatches.TryDequeue(out _))
+        {
+        }
+
+        while (queuedPageInvalidations.TryDequeue(out _))
+        {
+        }
+
+        pageUploadQueue.Clear();
+        queuedPageUploads.Clear();
+        pagesNeedingUpload.Clear();
+    }
+
+    private HashSet<FastVec2i> ChunksForPages(HashSet<FastVec2i> pageKeys)
+    {
+        HashSet<FastVec2i> chunks = new();
+        foreach (FastVec2i pageKey in pageKeys)
+        {
+            int baseChunkX = pageKey.X * ChunksPerPage;
+            int baseChunkZ = pageKey.Y * ChunksPerPage;
+            for (int dz = 0; dz < ChunksPerPage; dz++)
+            {
+                for (int dx = 0; dx < ChunksPerPage; dx++)
+                {
+                    FastVec2i chunkCoord = new(baseChunkX + dx, baseChunkZ + dz);
+                    if (IsValidTile(chunkCoord))
+                    {
+                        chunks.Add(chunkCoord);
+                    }
+                }
+            }
+        }
+
+        return chunks;
+    }
+
+    private void DiscardTerrainWorkForPages(HashSet<FastVec2i> pageKeys)
+    {
+        lock (pageLoadLock)
+        {
+            foreach (FastVec2i pageKey in pageKeys)
+            {
+                queuedPageLoads.Remove(pageKey);
+                queuedPageLoadPriorities.Remove(pageKey);
+                knownMissingPages.Remove(pageKey);
+            }
+
+            RebuildPageLoadQueueFromPrioritiesLocked();
+        }
+
+        DrainReadyPagesExcept(pageKeys);
+        DrainReadyPatchesExcept(pageKeys);
+        DrainPageInvalidationsExcept(pageKeys);
+        RemovePageUploads(pageKeys);
+    }
+
+    private void DiscardRepairWorkForChunks(HashSet<FastVec2i> chunks)
+    {
+        lock (repairLock)
+        {
+            foreach (FastVec2i chunkCoord in chunks)
+            {
+                queuedRepairs.Remove(chunkCoord);
+                queuedRepairReasons.Remove(chunkCoord);
+                queuedRepairDueMs.Remove(chunkCoord);
+            }
+
+            RemoveRepairQueueChunks(repairQueue, chunks);
+            List<long> emptyDelayedBuckets = new();
+            foreach (KeyValuePair<long, Queue<FastVec2i>> entry in delayedRepairQueue)
+            {
+                RemoveRepairQueueChunks(entry.Value, chunks);
+                if (entry.Value.Count == 0)
+                {
+                    emptyDelayedBuckets.Add(entry.Key);
+                }
+            }
+
+            foreach (long dueMs in emptyDelayedBuckets)
+            {
+                delayedRepairQueue.Remove(dueMs);
+            }
+        }
+    }
+
+    private static void RemoveRepairQueueChunks(Queue<FastVec2i> queue, HashSet<FastVec2i> chunks)
+    {
+        int queued = queue.Count;
+        for (int i = 0; i < queued; i++)
+        {
+            FastVec2i chunkCoord = queue.Dequeue();
+            if (!chunks.Contains(chunkCoord))
+            {
+                queue.Enqueue(chunkCoord);
+            }
+        }
+    }
+
+    private void RebuildPageLoadQueueFromPrioritiesLocked()
+    {
+        pageLoadQueue.Clear();
+        foreach (KeyValuePair<FastVec2i, int> entry in queuedPageLoadPriorities)
+        {
+            EnqueuePageLoadLocked(entry.Key, entry.Value);
+        }
+    }
+
+    private void DrainReadyPagesExcept(HashSet<FastVec2i> pageKeys)
+    {
+        List<FastMapPageSnapshot> retained = new();
+        while (readyPages.TryDequeue(out FastMapPageSnapshot? snapshot))
+        {
+            if (pageKeys.Contains(snapshot.PageKey))
+            {
+                lock (pageLoadLock)
+                {
+                    queuedPageLoads.Remove(snapshot.PageKey);
+                }
+
+                continue;
+            }
+
+            retained.Add(snapshot);
+        }
+
+        foreach (FastMapPageSnapshot snapshot in retained)
+        {
+            readyPages.Enqueue(snapshot);
+        }
+    }
+
+    private void DrainReadyPatchesExcept(HashSet<FastVec2i> pageKeys)
+    {
+        List<FastMapPagePatch> retained = new();
+        while (readyPatches.TryDequeue(out FastMapPagePatch? patch))
+        {
+            if (!pageKeys.Contains(PageKey(patch.ChunkCoord)))
+            {
+                retained.Add(patch);
+            }
+        }
+
+        foreach (FastMapPagePatch patch in retained)
+        {
+            readyPatches.Enqueue(patch);
+        }
+    }
+
+    private void DrainPageInvalidationsExcept(HashSet<FastVec2i> pageKeys)
+    {
+        List<FastVec2i> retained = new();
+        while (queuedPageInvalidations.TryDequeue(out FastVec2i pageKey))
+        {
+            if (!pageKeys.Contains(pageKey))
+            {
+                retained.Add(pageKey);
+            }
+        }
+
+        foreach (FastVec2i pageKey in retained)
+        {
+            queuedPageInvalidations.Enqueue(pageKey);
+        }
+    }
+
+    private void RemovePageUploads(HashSet<FastVec2i> pageKeys)
+    {
+        foreach (FastVec2i pageKey in pageKeys)
+        {
+            queuedPageUploads.Remove(pageKey);
+            pagesNeedingUpload.Remove(pageKey);
+        }
+
+        int queued = pageUploadQueue.Count;
+        for (int i = 0; i < queued; i++)
+        {
+            FastVec2i pageKey = pageUploadQueue.Dequeue();
+            if (!pageKeys.Contains(pageKey))
+            {
+                pageUploadQueue.Enqueue(pageKey);
+            }
         }
     }
 
