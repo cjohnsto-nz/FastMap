@@ -106,6 +106,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
     // pendingPageSaves keeps only the latest one per page, so every intermediate copy was
     // garbage. See SnapshotDirtyPagesIfDue.
     private readonly HashSet<FastVec2i> pagesAwaitingSnapshot = new();
+    private readonly Queue<FastVec2i> snapshotBatch = new();
     private readonly List<FastVec2i> snapshotScratch = new();
     private float snapshotAccum;
     private const int MaxSnapshotsPerTick = 4;
@@ -748,6 +749,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
 
         pagesAwaitingSnapshot.Clear();
+        snapshotBatch.Clear();
+        snapshotAccum = 0f;
         lock (pageSaveLock)
         {
             pendingPageSaves.Clear();
@@ -3526,32 +3529,37 @@ public sealed class FastPageMapLayer : RGBMapLayer
     /// </summary>
     private void SnapshotDirtyPagesIfDue(float dt)
     {
-        if (pagesAwaitingSnapshot.Count == 0)
+        if (pagesAwaitingSnapshot.Count == 0 && snapshotBatch.Count == 0)
         {
             snapshotAccum = 0f;
             return;
         }
 
         snapshotAccum += dt;
-        if (snapshotAccum < config.PageFlushIntervalSeconds && pagesAwaitingSnapshot.Count < config.PageFlushThreshold)
+        if (snapshotBatch.Count == 0)
         {
-            return;
-        }
-
-        snapshotScratch.Clear();
-        snapshotScratch.AddRange(pagesAwaitingSnapshot);
-        int budget = MaxSnapshotsPerTick;
-        foreach (FastVec2i pageKey in snapshotScratch)
-        {
-            if (budget-- <= 0)
+            if (snapshotAccum < config.PageFlushIntervalSeconds && pagesAwaitingSnapshot.Count < config.PageFlushThreshold)
             {
-                break;
+                return;
             }
 
+            // Freeze this batch so pages patched again after being snapshotted cannot
+            // jump ahead of its remaining pages. Their next snapshot waits for the
+            // next interval (or threshold), while this batch drains across ticks.
+            snapshotAccum = 0f;
+            foreach (FastVec2i pageKey in pagesAwaitingSnapshot)
+            {
+                snapshotBatch.Enqueue(pageKey);
+            }
+        }
+
+        int budget = MaxSnapshotsPerTick;
+        while (budget-- > 0 && snapshotBatch.TryDequeue(out FastVec2i pageKey))
+        {
             SnapshotPageForSave(pageKey);
         }
 
-        if (pagesAwaitingSnapshot.Count == 0)
+        if (pagesAwaitingSnapshot.Count == 0 && snapshotBatch.Count == 0)
         {
             snapshotAccum = 0f;
         }
@@ -3561,7 +3569,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
     /// Takes the pending snapshot of one page now, if it has one. Call before a page's
     /// pixel buffer is released so no accepted patch is lost.
     /// </summary>
-    private void SnapshotPageForSave(FastVec2i pageKey)
+    private void SnapshotPageForSave(FastVec2i pageKey, bool allowDuringShutdown = false)
     {
         if (!pagesAwaitingSnapshot.Remove(pageKey))
         {
@@ -3570,7 +3578,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         if (pages.TryGetValue(pageKey, out FastMapPageComponent? page) && page.HasPixelBuffer)
         {
-            QueuePageSave(page.CreateSnapshot());
+            QueuePageSave(page.CreateSnapshot(), allowDuringShutdown);
         }
     }
 
@@ -3580,8 +3588,12 @@ public sealed class FastPageMapLayer : RGBMapLayer
         snapshotScratch.AddRange(pagesAwaitingSnapshot);
         foreach (FastVec2i pageKey in snapshotScratch)
         {
-            SnapshotPageForSave(pageKey);
+            // DisposeResources has already stopped accepting new work. These final
+            // main-thread snapshots must still reach the immediately following flush.
+            SnapshotPageForSave(pageKey, allowDuringShutdown: true);
         }
+
+        snapshotBatch.Clear();
     }
 
     private void QueuePageUpload(FastVec2i pageKey)
@@ -4446,9 +4458,9 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
     }
 
-    private void QueuePageSave(FastMapPageSnapshot snapshot)
+    private void QueuePageSave(FastMapPageSnapshot snapshot, bool allowDuringShutdown = false)
     {
-        if (disposed || !snapshot.HasAnyValidChunks)
+        if ((disposed && !allowDuringShutdown) || !snapshot.HasAnyValidChunks)
         {
             return;
         }
@@ -5233,6 +5245,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
 
         pagesAwaitingSnapshot.Clear();
+        snapshotBatch.Clear();
+        snapshotAccum = 0f;
         lock (pageSaveLock)
         {
             pendingPageSaves.Clear();
