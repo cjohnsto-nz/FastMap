@@ -100,6 +100,16 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private readonly Dictionary<FastVec2i, FastMapPageSnapshot> pendingPageSaves = new();
     private readonly Dictionary<FastVec2i, MapPieceDB> pendingTileSaves = new();
 
+    // Pages whose pixel buffer changed since they were last snapshotted for the disk
+    // cache. Main thread only. Snapshots are taken once per flush interval rather than
+    // on every tick that touches a page: a snapshot is a full 4 MB copy on the LOH, and
+    // pendingPageSaves keeps only the latest one per page, so every intermediate copy was
+    // garbage. See SnapshotDirtyPagesIfDue.
+    private readonly HashSet<FastVec2i> pagesAwaitingSnapshot = new();
+    private readonly List<FastVec2i> snapshotScratch = new();
+    private float snapshotAccum;
+    private const int MaxSnapshotsPerTick = 4;
+
     private MapDB? mapdb;
     private string? mapDbPath;
     private bool mapDbWritable;
@@ -486,6 +496,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         MarkFrameProfiler("fastmap-ready-pages");
 #endif
         ProcessReadyPatches(stopwatch);
+        SnapshotDirtyPagesIfDue(dt);
 #if FASTMAPHITCHDIAGNOSTICS
         MarkFrameProfiler("fastmap-ready-patches");
 #endif
@@ -736,6 +747,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
             externalMapDbChangeTicks = 0;
         }
 
+        pagesAwaitingSnapshot.Clear();
         lock (pageSaveLock)
         {
             pendingPageSaves.Clear();
@@ -788,6 +800,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
             InvalidateTerrainPage(pageKey, queueReloadIfVisible: false);
         }
 
+        pagesAwaitingSnapshot.ExceptWith(pagesToRedraw);
         lock (pageSaveLock)
         {
             foreach (FastVec2i pageKey in pagesToRedraw)
@@ -819,6 +832,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         disposed = true;
         api.Event.ChunkDirty -= OnChunkDirty;
         WaitForMapDatabaseTasksToStop();
+        SnapshotAllDirtyPages();
         FlushPendingSaves();
         CloseMapDatabaseForShutdown();
 
@@ -3461,7 +3475,6 @@ public sealed class FastPageMapLayer : RGBMapLayer
             return;
         }
 
-        HashSet<FastVec2i> pagesToSave = new();
         int maxPatches = Math.Max(1, config.MaxBackgroundTilesPerPass);
         int processed = 0;
         while (processed < maxPatches && readyPatches.TryDequeue(out FastMapPagePatch? patch))
@@ -3489,7 +3502,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
             {
                 knownMissingPages.Remove(pageKey);
             }
-            pagesToSave.Add(pageKey);
+            pagesAwaitingSnapshot.Add(pageKey);
             QueuePageUpload(pageKey);
             if (profile)
             {
@@ -3504,13 +3517,70 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
             processed++;
         }
+    }
 
-        foreach (FastVec2i pageKey in pagesToSave)
+    /// <summary>
+    /// Snapshots dirty pages into the save queue once per flush interval (or when the
+    /// dirty count reaches the flush threshold), a few pages per tick so a burst of
+    /// dirty pages cannot stall a frame. The off-thread flush then writes them.
+    /// </summary>
+    private void SnapshotDirtyPagesIfDue(float dt)
+    {
+        if (pagesAwaitingSnapshot.Count == 0)
         {
-            if (pages.TryGetValue(pageKey, out FastMapPageComponent? page))
+            snapshotAccum = 0f;
+            return;
+        }
+
+        snapshotAccum += dt;
+        if (snapshotAccum < config.PageFlushIntervalSeconds && pagesAwaitingSnapshot.Count < config.PageFlushThreshold)
+        {
+            return;
+        }
+
+        snapshotScratch.Clear();
+        snapshotScratch.AddRange(pagesAwaitingSnapshot);
+        int budget = MaxSnapshotsPerTick;
+        foreach (FastVec2i pageKey in snapshotScratch)
+        {
+            if (budget-- <= 0)
             {
-                QueuePageSave(page.CreateSnapshot());
+                break;
             }
+
+            SnapshotPageForSave(pageKey);
+        }
+
+        if (pagesAwaitingSnapshot.Count == 0)
+        {
+            snapshotAccum = 0f;
+        }
+    }
+
+    /// <summary>
+    /// Takes the pending snapshot of one page now, if it has one. Call before a page's
+    /// pixel buffer is released so no accepted patch is lost.
+    /// </summary>
+    private void SnapshotPageForSave(FastVec2i pageKey)
+    {
+        if (!pagesAwaitingSnapshot.Remove(pageKey))
+        {
+            return;
+        }
+
+        if (pages.TryGetValue(pageKey, out FastMapPageComponent? page) && page.HasPixelBuffer)
+        {
+            QueuePageSave(page.CreateSnapshot());
+        }
+    }
+
+    private void SnapshotAllDirtyPages()
+    {
+        snapshotScratch.Clear();
+        snapshotScratch.AddRange(pagesAwaitingSnapshot);
+        foreach (FastVec2i pageKey in snapshotScratch)
+        {
+            SnapshotPageForSave(pageKey);
         }
     }
 
@@ -3698,6 +3768,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         if (page.HasGpuTexture && page.HasPixelBuffer)
         {
+            SnapshotPageForSave(page.PageKey);
             page.ReleasePixelBuffer();
             Interlocked.Increment(ref pagePixelBuffersReleased);
         }
@@ -4578,6 +4649,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
             }
 
             candidate.Page.DisposeTexture();
+            if (!candidate.Fallback)
+            {
+                SnapshotPageForSave(candidate.PageKey);
+            }
+
             candidate.Page.ReleasePixelBuffer();
             Interlocked.Increment(ref pagePixelBuffersReleased);
             if (candidate.Fallback)
@@ -5156,6 +5232,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
             surfaceTileCache.Clear();
         }
 
+        pagesAwaitingSnapshot.Clear();
         lock (pageSaveLock)
         {
             pendingPageSaves.Clear();
