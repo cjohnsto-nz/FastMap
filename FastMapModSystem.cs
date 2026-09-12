@@ -1,6 +1,7 @@
 using FastMap.Cache;
 using FastMap.Config;
 using FastMap.Map;
+using FastMap.Network;
 using System;
 using System.Collections.Generic;
 #if FASTMAPHITCHDIAGNOSTICS
@@ -27,6 +28,7 @@ public sealed class FastMapModSystem : ModSystem
     private Action? levelFinalizeHandler;
     private bool terrainSamplerUnavailableLogged;
     private bool terrainSamplerAvailableLogged;
+    private FastMapTerrainSamplingSystem? samplingSystem;
 #if FASTMAPHITCHDIAGNOSTICS
     private long hitchDiagnosticListenerId;
     private long lastHitchTickTimestamp;
@@ -48,6 +50,8 @@ public sealed class FastMapModSystem : ModSystem
     {
         capi = api;
         Instance = this;
+        samplingSystem = api.ModLoader.GetModSystem<FastMapTerrainSamplingSystem>();
+        if (samplingSystem != null) samplingSystem.AvailabilityChanged += OnSamplingAvailabilityChanged;
         Config = FastMapConfig.Load(api);
         FastMapStoragePaths.MigrateLegacyRootIfNeeded(api);
         RegisterConfigReloadListeners(api);
@@ -193,6 +197,11 @@ public sealed class FastMapModSystem : ModSystem
         FastMapTerrainSamplerAdapter? sampler = FastMapTerrainSamplerAdapter.TryCreate(capi);
         if (sampler == null)
         {
+            if (!capi.IsSinglePlayer)
+            {
+                message += " Server terrain sampling is unavailable. The server needs Fast Map, Terrain Sampler 1.3.0+, and permission to share samples.";
+                return TextCommandResult.Success(message);
+            }
             string? installedVersion = FastMapTerrainSamplerAdapter.InstalledTerrainSamplerVersion(capi);
             message += installedVersion == null
                 ? " Terrain Sampler: not installed or not loaded."
@@ -207,6 +216,10 @@ public sealed class FastMapModSystem : ModSystem
             int delta = adjustedHeight - seaLevel;
             string deltaText = delta > 0 ? $"+{delta}" : delta.ToString();
             message += $" Terrain Sampler height here: raw {sample.Height}, pregen {adjustedHeight} ({deltaText} vs sea level).";
+        }
+        catch (TerrainSamplesPendingException)
+        {
+            message += " Terrain Sampler: requesting server data; run this command again shortly.";
         }
         catch (Exception ex)
         {
@@ -434,7 +447,7 @@ public sealed class FastMapModSystem : ModSystem
 
                 FastPageMapLayer replacement = new(capi, worldMapManager);
                 replacement.OnLoaded();
-                worldMapManager.MapLayers[i] = replacement;
+                worldMapManager.MapLayers = MapLayerList.Replace<MapLayer>(worldMapManager.MapLayers, i, replacement);
             }
         }
 
@@ -485,7 +498,7 @@ public sealed class FastMapModSystem : ModSystem
     {
         string? installedVersion = capi != null ? FastMapTerrainSamplerAdapter.InstalledTerrainSamplerVersion(capi) : null;
         bool versionSupported = capi == null || FastMapTerrainSamplerAdapter.IsInstalledVersionSupported(capi);
-        bool available = versionSupported && FastMapTerrainSamplerAdapter.TryCreate(capi) != null;
+        bool available = FastMapTerrainSamplerAdapter.TryCreate(capi) != null;
         if (available)
         {
             if (!terrainSamplerAvailableLogged)
@@ -495,7 +508,7 @@ public sealed class FastMapModSystem : ModSystem
                     : "Pregen map layer is available";
                 capi?.Logger.Notification(
                     "[FastMap] Terrain Sampler integration detected ({0}); {1}; sampler overlay map layers are available.",
-                    installedVersion ?? "unknown version",
+                    capi?.IsSinglePlayer == false ? "server" : installedVersion ?? "unknown version",
                     pregenStatus);
                 terrainSamplerAvailableLogged = true;
             }
@@ -552,7 +565,7 @@ public sealed class FastMapModSystem : ModSystem
                 oldLayer.Dispose();
                 MapLayer replacement = (MapLayer)Activator.CreateInstance(typeof(T), capi!, worldMapManager)!;
                 replacement.OnLoaded();
-                worldMapManager.MapLayers[existingIndex] = replacement;
+                worldMapManager.MapLayers = MapLayerList.Replace(worldMapManager.MapLayers, existingIndex, replacement);
                 return;
             }
 
@@ -560,7 +573,7 @@ public sealed class FastMapModSystem : ModSystem
             {
                 MapLayer layer = (MapLayer)Activator.CreateInstance(typeof(T), capi!, worldMapManager)!;
                 layer.OnLoaded();
-                worldMapManager.MapLayers.Add(layer);
+                worldMapManager.MapLayers = MapLayerList.Insert(worldMapManager.MapLayers, worldMapManager.MapLayers.Count, layer);
             }
 
             return;
@@ -575,7 +588,7 @@ public sealed class FastMapModSystem : ModSystem
             MapLayer oldLayer = worldMapManager.MapLayers[index];
             oldLayer.OnShutDown();
             oldLayer.Dispose();
-            worldMapManager.MapLayers.RemoveAt(index);
+            worldMapManager.MapLayers = MapLayerList.RemoveAt(worldMapManager.MapLayers, index);
         }
     }
 
@@ -600,7 +613,7 @@ public sealed class FastMapModSystem : ModSystem
             oldLayer.Dispose();
             FastPageMapLayer replacement = new(capi!, worldMapManager);
             replacement.OnLoaded();
-            worldMapManager.MapLayers[fastMapIndex] = replacement;
+            worldMapManager.MapLayers = MapLayerList.Replace<MapLayer>(worldMapManager.MapLayers, fastMapIndex, replacement);
             return true;
         }
 
@@ -613,7 +626,7 @@ public sealed class FastMapModSystem : ModSystem
         int insertIndex = mapperIndex >= 0 ? mapperIndex + 1 : worldMapManager.MapLayers.Count;
         FastPageMapLayer fastMapLayer = new(capi!, worldMapManager);
         fastMapLayer.OnLoaded();
-        worldMapManager.MapLayers.Insert(insertIndex, fastMapLayer);
+        worldMapManager.MapLayers = MapLayerList.Insert<MapLayer>(worldMapManager.MapLayers, insertIndex, fastMapLayer);
         capi!.Logger.Notification("[FastMap] Mapper chunk layer detected; FastMap installed as terrain render layer while Mapper keeps map state.");
         return true;
     }
@@ -683,6 +696,7 @@ public sealed class FastMapModSystem : ModSystem
 
     public override void Dispose()
     {
+        if (samplingSystem != null) samplingSystem.AvailabilityChanged -= OnSamplingAvailabilityChanged;
         if (capi != null && levelFinalizeHandler != null)
         {
             capi.Event.LevelFinalize -= levelFinalizeHandler;
@@ -702,5 +716,32 @@ public sealed class FastMapModSystem : ModSystem
         {
             Instance = null;
         }
+    }
+
+    private void OnSamplingAvailabilityChanged()
+    {
+        if (capi == null || capi.IsSinglePlayer) return;
+        WorldMapManager? manager = capi.ModLoader.GetModSystem<WorldMapManager>(true);
+        GuiDialogWorldMap? dialog = manager?.worldMapDlg;
+        bool reopen = dialog?.IsOpened() == true;
+        EnumDialogType dialogType = dialog?.DialogType ?? EnumDialogType.HUD;
+        // Vanilla captures both the layer list and tab codes when creating this dialog.
+        // Recreate it after a late handshake. A new rendering identity also needs
+        // new immutable fallback caches, so stale in-flight work stays in the old layer.
+        bool renderingChanged = false;
+        if (manager != null)
+            foreach (var layer in manager.MapLayers)
+                if (layer is FastPageMapLayer pages && pages.ServerRenderingFingerprint != samplingSystem?.ClientRenderingFingerprint)
+                    renderingChanged = true;
+        if (dialog != null)
+        {
+            dialog.TryClose();
+            dialog.Dispose();
+            manager!.worldMapDlg = null!;
+        }
+        terrainSamplerAvailableLogged = false;
+        terrainSamplerUnavailableLogged = false;
+        ReplaceTerrainLayerRegistration(recreateFastMapLayer: renderingChanged);
+        if (reopen) manager?.ToggleMap(dialogType);
     }
 }

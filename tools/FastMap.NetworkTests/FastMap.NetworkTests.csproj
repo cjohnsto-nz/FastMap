@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <GamePath Condition="'$(GamePath)' == ''">$(VINTAGE_STORY_121)</GamePath>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="K4os.Compression.LZ4" Version="1.3.8" />
+    <Compile Include="../../Network/AdaptiveSamplingBudget.cs" Link="AdaptiveSamplingBudget.cs" />
+    <Reference Include="protobuf-net"><HintPath>$(GamePath)/Lib/protobuf-net.dll</HintPath></Reference>
+    <Compile Include="../../Map/FastMapTerrainSamplerColumn.cs" Link="FastMapTerrainSamplerColumn.cs" />
+    <Compile Include="../../Map/MapLayerList.cs" Link="MapLayerList.cs" />
+    <Compile Include="../../Map/MapLayerWorkerLifetime.cs" Link="MapLayerWorkerLifetime.cs" />
+    <Compile Include="../../Network/TerrainSamplingWorker.cs" Link="TerrainSamplingWorker.cs" />
+    <Compile Include="../../Network/TerrainPrewarmPlanner.cs" Link="TerrainPrewarmPlanner.cs" />
+    <Compile Include="../../Network/TerrainRenderingIdentity.cs" Link="TerrainRenderingIdentity.cs" />
+    <Compile Include="../../Config/FastMapServerConfig.cs" Link="FastMapServerConfig.cs" />
+    <Compile Include="../../Network/TerrainTileProtocol.cs" Link="TerrainTileProtocol.cs" />
+    <Compile Include="../../Network/TerrainTileService.cs" Link="TerrainTileService.cs" />
+    <Compile Include="../../Network/TerrainTileDiskCache.cs" Link="TerrainTileDiskCache.cs" />
+    <Compile Include="../../Network/TerrainTileCacheIdentity.cs" Link="TerrainTileCacheIdentity.cs" />
+    <Compile Include="../../Network/RemoteTerrainTiles.cs" Link="RemoteTerrainTiles.cs" />
+    <Compile Include="../../Network/TerrainSamplingProtocol.cs" Link="TerrainSamplingProtocol.cs" />
+    <Compile Include="../../Network/RemoteTerrainSampler.cs" Link="RemoteTerrainSampler.cs" />
+    <Compile Include="../../Network/TerrainSamplingService.cs" Link="TerrainSamplingService.cs" />
+  </ItemGroup>
+</Project>
