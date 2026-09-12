@@ -730,7 +730,13 @@ public sealed class FastMapModSystem : ModSystem
         bool reopen = dialog?.IsOpened() == true;
         EnumDialogType dialogType = dialog?.DialogType ?? EnumDialogType.HUD;
         // Vanilla captures both the layer list and tab codes when creating this dialog.
-        // Recreate it after a late handshake, while retaining the existing terrain/cache layer.
+        // Recreate it after a late handshake. A new rendering identity also needs
+        // new immutable fallback caches, so stale in-flight work stays in the old layer.
+        bool renderingChanged = false;
+        if (manager != null)
+            foreach (var layer in manager.MapLayers)
+                if (layer is FastPageMapLayer pages && pages.ServerRenderingFingerprint != samplingSystem?.ClientRenderingFingerprint)
+                    renderingChanged = true;
         if (dialog != null)
         {
             dialog.TryClose();
@@ -739,7 +745,7 @@ public sealed class FastMapModSystem : ModSystem
         }
         terrainSamplerAvailableLogged = false;
         terrainSamplerUnavailableLogged = false;
-        ReplaceTerrainLayerRegistration();
+        ReplaceTerrainLayerRegistration(recreateFastMapLayer: renderingChanged);
         if (reopen) manager?.ToggleMap(dialogType);
     }
 }

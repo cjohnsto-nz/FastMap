@@ -13,7 +13,8 @@ namespace FastMap.Network;
 
 public sealed class FastMapTerrainSamplingSystem : ModSystem
 {
-    private const string ChannelName = "fastmap-terrain-v6";
+    private const string ChannelName = "fastmap-terrain-v7";
+    private string serverRenderingFingerprint = "";
     private ICoreClientAPI? capi;
     private ICoreServerAPI? sapi;
     private IClientNetworkChannel? clientChannel;
@@ -39,6 +40,7 @@ public sealed class FastMapTerrainSamplingSystem : ModSystem
     private long nextPrewarmUpdate;
 
     internal FastMapTerrainSamplerAdapter? ClientAdapter { get; private set; }
+    internal string? ClientRenderingFingerprint { get; private set; }
     public event Action? AvailabilityChanged;
 
     public override double ExecuteOrder() => 0.9;
@@ -62,8 +64,16 @@ public sealed class FastMapTerrainSamplingSystem : ModSystem
     private void OnStatus(TerrainSamplingStatus status)
     {
         if (disposed || remote == null) return;
-        bool available = status.Version == 6 && status.Available;
-        bool changed = remote.Available != available;
+        bool available = status.CanUseTiles;
+        string? fingerprint = available ? status.RenderingFingerprint : null;
+        bool identityChanged = ClientRenderingFingerprint != fingerprint;
+        bool changed = remote.Available != available || identityChanged;
+        if (identityChanged)
+        {
+            remote.SetAvailable(false);
+            remoteTiles?.SetAvailable(false);
+        }
+        ClientRenderingFingerprint = fingerprint;
         remote.SetAvailable(available);
         remoteTiles?.SetAvailable(available);
         if (changed)
@@ -119,10 +129,11 @@ public sealed class FastMapTerrainSamplingSystem : ModSystem
             .SetMessageHandler<TerrainTileRequest>((player, request) => tileService?.Request(player.PlayerUID, request))
             .SetMessageHandler<TerrainSamplingHello>((player, hello) =>
             {
-                bool available = hello.Version == 6 && IsAllowed(player.PlayerUID);
+                bool available = hello.Version == TerrainSamplingHello.ProtocolVersion && IsAllowed(player.PlayerUID);
                 serverChannel!.SendPacket(new TerrainSamplingStatus
                 {
                     Available = available,
+                    RenderingFingerprint = serverRenderingFingerprint,
                     Reason = available ? "" : "Server requires Terrain Sampler 1.3.0+, enabled sampling, and permission."
                 }, player);
             })
@@ -144,6 +155,8 @@ public sealed class FastMapTerrainSamplingSystem : ModSystem
             var renderer = new FastMapTerrainRenderer(renderingConfig,palette,api.WorldManager.MapSizeY,heightOffset);
             int Color(string code) => ColorUtil.ReverseColorBytes(ColorUtil.Hex2Int(ChunkMapLayer.hexColorsByCode[code]));
             int land=Color("land"), ocean=Color("ocean"), edge=Color("wateredge"), seaLevel=api.World.SeaLevel;
+            serverRenderingFingerprint = renderer.RenderingFingerprint(seaLevel, land, ocean, edge,
+                FastMapTerrainSamplerAdapter.InstalledTerrainSamplerVersion(api) ?? "unavailable");
             tileService = new TerrainTileService(api.WorldManager.MapSizeX,api.WorldManager.MapSizeZ,IsAllowed,
                 (x,z)=>local!.SampleColumn(x,z),
                 (request,grid,style)=>renderer.Render(grid,request.PageX*1024,request.PageZ*1024,request.Step,seaLevel,land,ocean,edge,style),
@@ -215,7 +228,7 @@ public sealed class FastMapTerrainSamplingSystem : ModSystem
     private void RefreshPrewarmTargets()
     {
         if (tileService == null || sapi == null) return;
-        if (!config.EnableServerPrewarm || !config.EnableTerrainSampling || local == null)
+        if (!config.ShouldPrewarm(sapi.Server.IsDedicated) || local == null)
         {
             tileService.SetPrewarmTargets(Array.Empty<TerrainSamplingRequest>());
             return;

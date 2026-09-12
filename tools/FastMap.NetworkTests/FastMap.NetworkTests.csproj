@@ -13,6 +13,8 @@
     <Compile Include="../../Map/FastMapTerrainSamplerColumn.cs" Link="FastMapTerrainSamplerColumn.cs" />
     <Compile Include="../../Network/TerrainSamplingWorker.cs" Link="TerrainSamplingWorker.cs" />
     <Compile Include="../../Network/TerrainPrewarmPlanner.cs" Link="TerrainPrewarmPlanner.cs" />
+    <Compile Include="../../Network/TerrainRenderingIdentity.cs" Link="TerrainRenderingIdentity.cs" />
+    <Compile Include="../../Config/FastMapServerConfig.cs" Link="FastMapServerConfig.cs" />
     <Compile Include="../../Network/TerrainTileProtocol.cs" Link="TerrainTileProtocol.cs" />
     <Compile Include="../../Network/TerrainTileService.cs" Link="TerrainTileService.cs" />
     <Compile Include="../../Network/RemoteTerrainTiles.cs" Link="RemoteTerrainTiles.cs" />

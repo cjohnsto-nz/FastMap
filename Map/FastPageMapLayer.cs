@@ -47,6 +47,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private readonly FastMapTerrainFallbackDiskCache normalTerrainFallbackDiskCache;
     private readonly FastMapTerrainFallbackDiskCache brownTerrainFallbackDiskCache;
     private readonly FastMapTerrainFallbackDiskCache trueColorTerrainFallbackDiskCache;
+    internal string? ServerRenderingFingerprint { get; }
     private readonly FastMapFallbackPalette fallbackPalette;
     private readonly FastMapTextureAtlas? textureAtlas;
     private readonly FastMapTextureAtlas? fallbackTextureAtlas;
@@ -261,21 +262,26 @@ public sealed class FastPageMapLayer : RGBMapLayer
         observedTerrainFallbackLayerActive = TerrainFallbackLayerActive;
         nativeDbPageBuildSemaphore = new SemaphoreSlim(config.MaxParallelNativeDbPageBuilds);
         pageDiskCache = new FastMapPageDiskCache(api.World.SavegameIdentifier, config.EnableCompressedCache, config.UseFilteredCache, config.UseHighCompressionCache);
+        ServerRenderingFingerprint = capi.IsSinglePlayer ? null
+            : capi.ModLoader.GetModSystem<FastMapTerrainSamplingSystem>()?.ClientRenderingFingerprint;
+        string fallbackVariant = capi.IsSinglePlayer
+            ? TerrainSamplerFallbackVariantSuffix(terrainSamplerFallbackHeightOffset, terrainSamplerFallbackWaterLevelOffset)
+            : TerrainRenderingIdentity.CacheSuffix(ServerRenderingFingerprint);
         normalTerrainFallbackDiskCache = new FastMapTerrainFallbackDiskCache(
             api.World.SavegameIdentifier,
             config.TerrainSamplerFallbackResolutionScale,
             config.UseHighCompressionCache,
-            "normal-vanilla-v1" + TerrainSamplerFallbackVariantSuffix(terrainSamplerFallbackHeightOffset, terrainSamplerFallbackWaterLevelOffset));
+            "normal-vanilla-v1" + fallbackVariant);
         brownTerrainFallbackDiskCache = new FastMapTerrainFallbackDiskCache(
             api.World.SavegameIdentifier,
             config.TerrainSamplerFallbackResolutionScale,
             config.UseHighCompressionCache,
-            "brown-v1" + TerrainSamplerFallbackVariantSuffix(terrainSamplerFallbackHeightOffset, terrainSamplerFallbackWaterLevelOffset));
+            "brown-v1" + fallbackVariant);
         trueColorTerrainFallbackDiskCache = new FastMapTerrainFallbackDiskCache(
             api.World.SavegameIdentifier,
             config.TerrainSamplerFallbackResolutionScale,
             config.UseHighCompressionCache,
-            "truecolour-palette-v1" + TerrainSamplerFallbackVariantSuffix(terrainSamplerFallbackHeightOffset, terrainSamplerFallbackWaterLevelOffset));
+            "truecolour-palette-v1" + fallbackVariant);
         fallbackPalette = FastMapFallbackPalette.Load(api, config);
         textureAtlas = config.EnableTextureAtlas ? new FastMapTextureAtlas(capi, FastMapPageComponent.PageSize) : null;
         fallbackTextureAtlas = config.EnableTextureAtlas

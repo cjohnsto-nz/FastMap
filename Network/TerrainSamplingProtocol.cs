@@ -9,15 +9,19 @@ namespace FastMap.Network;
 [ProtoContract]
 public sealed class TerrainSamplingHello
 {
-    [ProtoMember(1)] public int Version { get; set; } = 6;
+    public const int ProtocolVersion = 7;
+    [ProtoMember(1)] public int Version { get; set; } = ProtocolVersion;
 }
 
 [ProtoContract]
 public sealed class TerrainSamplingStatus
 {
-    [ProtoMember(1)] public int Version { get; set; } = 6;
+    [ProtoMember(1)] public int Version { get; set; } = TerrainSamplingHello.ProtocolVersion;
     [ProtoMember(2)] public bool Available { get; set; }
     [ProtoMember(3)] public string Reason { get; set; } = "";
+    [ProtoMember(4)] public string RenderingFingerprint { get; set; } = "";
+    public bool CanUseTiles => Version == TerrainSamplingHello.ProtocolVersion && Available
+        && TerrainRenderingIdentity.IsValid(RenderingFingerprint);
 }
 
 [ProtoContract]

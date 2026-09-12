@@ -74,6 +74,19 @@ internal sealed class FastMapFallbackPalette
     public bool HasClimatePlantTint => climatePlantTint != null;
     public bool HasSeasonalGrassTint => seasonalGrassTint != null;
 
+    internal string RenderingFingerprint => FastMap.Network.TerrainRenderingIdentity.Hash(writer =>
+    {
+        // These are the effective loaded colours, including asset overrides.
+        foreach (var colours in new[] { grass, dryGrass, lushGrass, trees, water, snow, brown })
+        {
+            writer.Write(colours.Length);
+            foreach (int colour in colours) writer.Write(colour);
+        }
+        writer.Write(waterBaseColor); writer.Write(waterRainfallColor);
+        writer.Write(waterRainfallStrength); writer.Write(waterTemperatureColor);
+        writer.Write(waterTemperatureStrength); writer.Write(waterNoiseStrength);
+    });
+
     public static FastMapFallbackPalette Load(ICoreAPI api, FastMapConfig config)
     {
         config.Normalize();

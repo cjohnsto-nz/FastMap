@@ -19,6 +19,11 @@ internal sealed class FastMapTerrainRenderer
         terrainSamplerFallbackWaterLevelOffset=config.TerrainSamplerFallbackWaterLevelOffset;
     }
 
+    internal string RenderingFingerprint(int seaLevel, int landColor, int waterColor, int waterEdgeColor, string samplerVersion)
+        => new FastMap.Network.TerrainRenderingIdentity(heightOffset, terrainSamplerFallbackWaterLevelOffset,
+            config.TerrainSamplerFallbackSnowStartHeight, mapHeight, seaLevel, landColor, waterColor,
+            waterEdgeColor, fallbackPalette.RenderingFingerprint, samplerVersion).Fingerprint;
+
     public int[] Render(FastMapTerrainSamplerColumn[] grid, int baseBlockX, int baseBlockZ, int step,
         int seaLevel, int landColor, int waterColor, int waterEdgeColor, int style)
     {

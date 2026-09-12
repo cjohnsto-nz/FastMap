@@ -19,4 +19,6 @@ public sealed class FastMapServerConfig
     public int TileCacheMegabytes { get; set; } = 256;
     public int MaxTransferKilobytesPerTick { get; set; } = 256;
     public bool LogSamplingStats { get; set; } = true;
+
+    internal bool ShouldPrewarm(bool isDedicated) => isDedicated && EnableTerrainSampling && EnableServerPrewarm;
 }

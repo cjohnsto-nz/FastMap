@@ -23,8 +23,9 @@ internal sealed class TerrainTileService : IDisposable
     private readonly int sizeX,sizeZ,transferLimit;
     private readonly long limit;
     private readonly Func<long> clock;
-    private readonly BlockingCollection<Build>? queue;
-    private readonly Thread? thread;
+    private readonly BlockingCollection<Build> queue;
+    private readonly Thread thread;
+    private readonly bool backgroundSampling;
     private Build? work;
     private long serial;
     private int cursor;
@@ -39,7 +40,7 @@ internal sealed class TerrainTileService : IDisposable
     public int PendingRequests=>subscriptions.Count;
     public int PendingPrewarm=>targets.Count(t=>!cache.ContainsKey(Key(t)));
     public bool IsWorking=>work!=null;
-    public bool Background=>thread!=null;
+    public bool Background=>backgroundSampling;
     public TerrainTileService(int sizeX,int sizeZ,Func<string,bool> allowed,
         Func<int,int,FastMapTerrainSamplerColumn> sample,Func<TerrainTileRequest,FastMapTerrainSamplerColumn[],int,int[]> render,
         Action<string,TerrainTileBatch> send,int cacheMegabytes=64,int transferKilobytes=256,bool background=true,Action<string>? log=null,Func<long>? clock=null)
@@ -47,13 +48,13 @@ internal sealed class TerrainTileService : IDisposable
         this.sizeX=sizeX;this.sizeZ=sizeZ;this.allowed=allowed;this.sample=sample;this.render=render;this.send=send;this.log=log;
         this.clock=clock??(()=>Environment.TickCount64);
         limit=Math.Clamp(cacheMegabytes,1,256)*1024L*1024;transferLimit=Math.Clamp(transferKilobytes,32,1024)*1024;
-        if(background)
-        {
-            queue=new BlockingCollection<Build>(1);
-            thread=new Thread(()=>{foreach(var build in queue.GetConsumingEnumerable())Run(build);})
-                {IsBackground=true,Name="FastMap terrain tiles"};
-            thread.Start();
-        }
+        backgroundSampling=background;
+        // Sampling may require the game thread, but rendering the completed grid
+        // and compressing pixels never do. Both paths share one bounded worker.
+        queue=new BlockingCollection<Build>(1);
+        thread=new Thread(()=>{foreach(var build in queue.GetConsumingEnumerable())Run(build);})
+            {IsBackground=true,Name="FastMap terrain tiles"};
+        thread.Start();
     }
     private static (int,int,int) Key(TerrainTileRequest r)=>(r.PageX,r.PageZ,r.Step);
     public void Request(string owner,TerrainTileRequest request)
@@ -172,7 +173,7 @@ internal sealed class TerrainTileService : IDisposable
                 if(MakeRoom(needed,!prewarm))
                 {
                     work=new Build(request,needed,prewarm);
-                    if(queue!=null)queue.Add(work);
+                    if(backgroundSampling)queue.Add(work);
                 }
                 else if(!prewarm)
                 {
@@ -181,16 +182,35 @@ internal sealed class TerrainTileService : IDisposable
                 }
             }
         }
-        if(work!=null && queue==null)
+        if(work!=null && !backgroundSampling && !work.RenderQueued)
         {
-            try {Advance(work,Math.Clamp(maxSamples,1,65536),timer,Math.Clamp(budgetMilliseconds,1,20));}
+            try
+            {
+                Advance(work,Math.Clamp(maxSamples,1,65536),timer,Math.Clamp(budgetMilliseconds,1,20));
+                if(work.Offset==work.Grid.Length)
+                {
+                    work.RenderQueued=true;
+                    queue.Add(work);
+                }
+            }
             catch(OperationCanceledException){work.Completion.TrySetCanceled();}
             catch(Exception ex){work.Completion.TrySetException(ex);}
         }
     }
     private void Run(Build build)
     {
-        try {Advance(build,int.MaxValue,Stopwatch.StartNew(),double.PositiveInfinity);}
+        try
+        {
+            if(backgroundSampling)Advance(build,int.MaxValue,Stopwatch.StartNew(),double.PositiveInfinity);
+            var tiles=new EncodedTerrainTile[3];
+            for(int style=0;style<3;style++)
+            {
+                build.Cancel.Token.ThrowIfCancellationRequested();
+                tiles[style]=EncodedTerrainTile.Encode(render(build.Request,build.Grid,style));
+            }
+            build.Cancel.Token.ThrowIfCancellationRequested();
+            build.Completion.TrySetResult(tiles);
+        }
         catch(OperationCanceledException){build.Completion.TrySetCanceled();}
         catch(Exception ex){build.Completion.TrySetException(ex);}
     }
@@ -204,23 +224,16 @@ internal sealed class TerrainTileService : IDisposable
             int x=Math.Clamp(r.PageX*1024-r.Step+i%width*r.Step,0,sizeX-1);
             int z=Math.Clamp(r.PageZ*1024-r.Step+i/width*r.Step,0,sizeZ-1);
             build.Grid[build.Offset++]=sample(x,z);
-            if(queue!=null && (build.Offset&1023)==0 && delay>0 && build.Cancel.Token.WaitHandle.WaitOne(delay))
+            if(backgroundSampling && (build.Offset&1023)==0 && delay>0 && build.Cancel.Token.WaitHandle.WaitOne(delay))
                 build.Cancel.Token.ThrowIfCancellationRequested();
-        }
-        if(build.Offset==build.Grid.Length)
-        {
-            var tiles=new EncodedTerrainTile[3];
-            for(int style=0;style<3;style++)
-            {build.Cancel.Token.ThrowIfCancellationRequested();tiles[style]=EncodedTerrainTile.Encode(render(r,build.Grid,style));}
-            build.Completion.TrySetResult(tiles);
         }
     }
     private void Fail(string owner,int id,string error)=>send(owner,new TerrainTileBatch{Id=id,Error=error});
     public void Dispose()
     {
-        if(disposed)return;disposed=true;work?.Cancel.Cancel();queue?.CompleteAdding();thread?.Join();
+        if(disposed)return;disposed=true;work?.Cancel.Cancel();queue.CompleteAdding();thread.Join();
         if(work?.Completion.Task.IsFaulted==true)_=work.Completion.Task.Exception;
-        work?.Cancel.Dispose();work=null;queue?.Dispose();cache.Clear();subscriptions.Clear();targets.Clear();
+        work?.Cancel.Dispose();work=null;queue.Dispose();cache.Clear();subscriptions.Clear();targets.Clear();
     }
     private sealed class Entry
     {
@@ -237,7 +250,7 @@ internal sealed class TerrainTileService : IDisposable
     private sealed class Build
     {
         public readonly TerrainTileRequest Request;public readonly long Reservation;public readonly bool Prewarm;
-        public readonly FastMapTerrainSamplerColumn[] Grid;public int Offset;
+        public readonly FastMapTerrainSamplerColumn[] Grid;public int Offset;public bool RenderQueued;
         public readonly Stopwatch Timer=Stopwatch.StartNew();public readonly CancellationTokenSource Cancel=new();
         public readonly TaskCompletionSource<EncodedTerrainTile[]> Completion=new(TaskCreationOptions.RunContinuationsAsynchronously);
         public Build(TerrainTileRequest r,long reservation,bool prewarm)

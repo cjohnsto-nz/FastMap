@@ -415,3 +415,78 @@ Check(burstClient.PoolBytes<1024*1024,"Whole cached burst remains compressed whi
 for(int i=0;i<300;i++)Check(burstClient.Get(i,1,4,0)[0]==i,"Burst page retained until the renderer consumes it");
 burstClient.Pump(_=>throw new Exception("Cached burst must not require refetches"));
 Console.WriteLine($"PASS {assertions} assertions including compressed cached viewport bursts without refetching.");
+
+// An unaudited sampler stays on the tick thread, but a slow renderer must not.
+using var renderEntered=new ManualResetEventSlim();
+using var renderRelease=new ManualResetEventSlim();
+int foregroundSamples=0,foregroundRenders=0;
+var foregroundReplies=new List<TerrainTileBatch>();
+using var foregroundTiles=new TerrainTileService(10000,10000,_=>true,
+    (_,_)=>{if(Environment.CurrentManagedThreadId!=mainThread)throw new Exception("Unsafe sampler ran on worker");foregroundSamples++;return new FastMapTerrainSamplerColumn(42);},
+    (r,g,style)=>
+    {
+        if(Environment.CurrentManagedThreadId==mainThread)throw new Exception("Renderer ran on tick thread");
+        Interlocked.Increment(ref foregroundRenders);renderEntered.Set();
+        if(!renderRelease.Wait(5000))throw new Exception("Render gate timeout");
+        return Enumerable.Repeat(style+42,r.Width*r.Width).ToArray();
+    },(_,b)=>foregroundReplies.Add(b),background:false);
+foregroundTiles.Request("foreground",new TerrainTileRequest{Id=800,PageX=1,PageZ=1,Step=32});
+var foregroundTimer=System.Diagnostics.Stopwatch.StartNew();
+while(!renderEntered.IsSet&&foregroundTimer.ElapsedMilliseconds<1000)foregroundTiles.Tick(2,256);
+Check(renderEntered.Wait(1000),"Tick returns while slow rendering is blocked on a worker");
+Check(foregroundSamples==1089&&!foregroundTiles.Background,"Main-thread-only sampler completes exactly one grid");
+long renderingReservation=foregroundTiles.PoolBytes;
+for(int i=0;i<10;i++)foregroundTiles.Tick(2,256);
+Check(foregroundSamples==1089&&foregroundRenders==1&&foregroundTiles.PoolBytes==renderingReservation,"Pending render retains reservation without sampling or dispatching again");
+renderRelease.Set();DrainTiles(foregroundTiles);
+Check(foregroundRenders==3&&foregroundReplies.Any(b=>b.Data.Length>0)&&foregroundReplies.All(b=>b.Error.Length==0),"Worker renders and compresses three variants before tick-thread delivery");
+renderEntered.Reset();renderRelease.Reset();
+foregroundTiles.Request("cancel-render",new TerrainTileRequest{Id=801,PageX=2,PageZ=1,Step=32});
+foregroundTimer.Restart();
+while(!renderEntered.IsSet&&foregroundTimer.ElapsedMilliseconds<1000)foregroundTiles.Tick(2,256);
+Check(renderEntered.Wait(1000),"Second main-thread sample reaches rendering worker");
+renderingReservation=foregroundTiles.PoolBytes;
+foregroundTiles.Remove("cancel-render");
+Check(foregroundTiles.PoolBytes==renderingReservation,"Cancelling an active render retains its memory until worker completion");
+renderRelease.Set();DrainTiles(foregroundTiles);
+Check(!foregroundReplies.Any(b=>b.Id==801&&b.Data.Length>0),"Cancelled render cannot send a late tile");
+
+// Integrated single-player servers must not duplicate the client's Background Pregen.
+var prewarmConfig=new FastMap.Config.FastMapServerConfig{EnableTerrainSampling=true,EnableServerPrewarm=true};
+int hostingSamples=0,hostingPackets=0;
+using var hostingTiles=new TerrainTileService(10000,10000,_=>true,
+    (_,_)=>{Interlocked.Increment(ref hostingSamples);return new FastMapTerrainSamplerColumn(42);},
+    (r,g,s)=>new int[r.Width*r.Width],(_,_)=>hostingPackets++);
+void SetHostingTargets(bool dedicated)=>hostingTiles.SetPrewarmTargets(prewarmConfig.ShouldPrewarm(dedicated)?tilePlan.Take(1):Array.Empty<TerrainSamplingRequest>());
+SetHostingTargets(false);hostingTiles.Tick(2,256);
+Check(hostingSamples==0&&!hostingTiles.IsWorking&&hostingTiles.PendingPrewarm==0,"Enabled server settings still produce no automatic single-player work");
+prewarmConfig.EnableTerrainSampling=false;SetHostingTargets(true);hostingTiles.Tick(2,256);
+Check(hostingSamples==0&&!hostingTiles.IsWorking,"Master opt-out suppresses dedicated prewarming");
+prewarmConfig.EnableTerrainSampling=true;prewarmConfig.EnableServerPrewarm=false;SetHostingTargets(true);hostingTiles.Tick(2,256);
+Check(hostingSamples==0&&!hostingTiles.IsWorking,"Prewarm opt-out suppresses dedicated speculative work");
+prewarmConfig.EnableServerPrewarm=true;SetHostingTargets(true);DrainTiles(hostingTiles,true);
+Check(hostingSamples==66049&&hostingPackets==0,"Dedicated hosting still prewarms one target without players or packets");
+
+// Server settings and effective palettes define a stable disk-cache namespace.
+var renderIdentity=new TerrainRenderingIdentity(0,-1,250,256,110,1,2,3,"palette-a","1.3.0");
+string originalFingerprint=renderIdentity.Fingerprint;
+var changedIdentities=new[]
+{
+    renderIdentity with {HeightOffset=1}, renderIdentity with {WaterLevelOffset=0},
+    renderIdentity with {SnowStartHeight=251}, renderIdentity with {MapHeight=320},
+    renderIdentity with {SeaLevel=111}, renderIdentity with {LandColor=4},
+    renderIdentity with {WaterColor=5}, renderIdentity with {WaterEdgeColor=6},
+    renderIdentity with {PaletteFingerprint="palette-b"},renderIdentity with {SamplerVersion="1.4.0"}
+};
+Check(originalFingerprint==(renderIdentity with {}).Fingerprint,"Identical settings reuse the cache across server restarts");
+foreach(var changedIdentity in changedIdentities)
+{
+    var status=Serializer.DeepClone(new TerrainSamplingStatus{Available=true,RenderingFingerprint=changedIdentity.Fingerprint});
+    Check(status.CanUseTiles&&status.RenderingFingerprint==changedIdentity.Fingerprint,"Server rendering identity survives negotiation");
+    Check(TerrainRenderingIdentity.CacheSuffix(status.RenderingFingerprint)!=TerrainRenderingIdentity.CacheSuffix(originalFingerprint),"Changed server rendering input selects a different cache namespace");
+}
+Check(!new TerrainSamplingStatus{Available=true}.CanUseTiles,"Missing identity cannot expose legacy cached tiles");
+Check(!new TerrainSamplingStatus{Version=6,Available=true,RenderingFingerprint=originalFingerprint}.CanUseTiles,"Previous protocol cannot bypass rendering identity negotiation");
+Check(!new TerrainSamplingStatus{Available=true,RenderingFingerprint="../../other-cache"}.CanUseTiles,"Untrusted identity cannot become a filesystem path");
+Check(TerrainRenderingIdentity.CacheSuffix(null)!=TerrainRenderingIdentity.CacheSuffix(originalFingerprint),"Pre-handshake cache is isolated until the server identity arrives");
+Console.WriteLine($"PASS {assertions} assertions including tick-thread sampling with worker rendering and negotiated cache identity.");
