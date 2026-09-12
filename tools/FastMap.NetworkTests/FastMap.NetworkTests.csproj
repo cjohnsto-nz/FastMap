@@ -19,6 +19,8 @@
     <Compile Include="../../Config/FastMapServerConfig.cs" Link="FastMapServerConfig.cs" />
     <Compile Include="../../Network/TerrainTileProtocol.cs" Link="TerrainTileProtocol.cs" />
     <Compile Include="../../Network/TerrainTileService.cs" Link="TerrainTileService.cs" />
+    <Compile Include="../../Network/TerrainTileDiskCache.cs" Link="TerrainTileDiskCache.cs" />
+    <Compile Include="../../Network/TerrainTileCacheIdentity.cs" Link="TerrainTileCacheIdentity.cs" />
     <Compile Include="../../Network/RemoteTerrainTiles.cs" Link="RemoteTerrainTiles.cs" />
     <Compile Include="../../Network/TerrainSamplingProtocol.cs" Link="TerrainSamplingProtocol.cs" />
     <Compile Include="../../Network/RemoteTerrainSampler.cs" Link="RemoteTerrainSampler.cs" />

@@ -560,3 +560,190 @@ nextLifetime.Exit();
 nextLifetime.StopAndWait();
 
 Console.WriteLine($"PASS {assertions} assertions including immutable layer publication and worker retirement.");
+
+// Durable tile caches survive service recreation without sampling or rendering.
+string diskTestRoot = Path.Combine(Path.GetTempPath(), "fastmap-disk-tests-" + Guid.NewGuid().ToString("N"));
+Directory.CreateDirectory(diskTestRoot);
+try
+{
+    var defaults = new FastMap.Config.FastMapServerConfig();
+    Check(defaults.PersistTileCache && defaults.TileDiskCacheMegabytes == 1024 && !defaults.ShouldPersist(true),
+        "Persistence defaults on but master Pregen opt-out prevents disk use");
+    defaults.EnableTerrainSampling = true;
+    Check(defaults.ShouldPersist(true) && !defaults.ShouldPersist(false), "Only enabled dedicated hosts persist server tiles");
+    defaults.PersistTileCache = false;
+    Check(!defaults.ShouldPersist(true), "Persistence can be explicitly disabled");
+
+    var identity = new TerrainTileCacheIdentity("world-a", 123, 10000, 10000, "settings-a", "mods-a", originalFingerprint);
+    Check(identity.Fingerprint == (identity with {}).Fingerprint, "World cache identity is stable across restarts");
+    foreach (var changed in new[] { identity with { WorldId="world-b" }, identity with { Seed=124 },
+        identity with { SizeX=20000 }, identity with { SizeZ=20000 }, identity with { WorldConfiguration="settings-b" },
+        identity with { ModVersions="mods-b" }, identity with { Rendering=changedIdentities[0].Fingerprint }, identity with { Revision=1 } })
+        Check(changed.Fingerprint != identity.Fingerprint, "Changed world or renderer cannot reuse stale pixels");
+
+    string persistentRoot = Path.Combine(diskTestRoot, "restart");
+    var savedRequest = new TerrainTileRequest { Id=1, PageX=2, PageZ=2, Step=4 };
+    int savedSamples=0, savedRenders=0;
+    int[] DiskPixels(TerrainTileRequest r, int style) => Enumerable.Repeat(unchecked((int)0xff345678)+style, r.Width*r.Width).ToArray();
+    using (var first = new TerrainTileService(10000,10000,_=>true,
+        (x,z)=>{savedSamples++;return new FastMapTerrainSamplerColumn(42);},
+        (r,g,s)=>{savedRenders++;return DiskPixels(r,s);},(_,_)=>{},
+        diskCache:new TerrainTileDiskCache(persistentRoot,identity.Fingerprint)))
+    {
+        first.SetPrewarmTargets(tilePlan.Take(1));
+        DrainTiles(first,true);
+        Check(savedSamples==66049 && savedRenders==3 && first.DiskCachedPages==1, "Completed prewarm is persisted immediately in all palettes");
+    }
+    bool diskPermission=true;
+    using (var restoredClient=new RemoteTerrainTiles(()=>now))
+    using (var restored = new TerrainTileService(10000,10000,_=>diskPermission,
+        (_,_)=>throw new Exception("Restored tile resampled"),(_,_,_)=>throw new Exception("Restored tile rerendered"),
+        (_,batch)=>restoredClient.Receive(Serializer.DeepClone(batch)),background:false,
+        diskCache:new TerrainTileDiskCache(persistentRoot,identity.Fingerprint)))
+    {
+        restored.SetPrewarmTargets(tilePlan.Take(1));
+        DrainTiles(restored,true);
+        Check(restored.CachedPages==0 && restored.DiskCachedPages==1 && restored.Samples==0,
+            "Restart indexes compressed files without eagerly filling RAM or regenerating prewarm");
+        restoredClient.SetAvailable(true);
+        for(int style=0;style<3;style++)
+        {
+            int selected=style;
+            Pending(()=>restoredClient.Get(2,2,4,selected));
+            restoredClient.Pump(r=>restored.Request("reader",r));
+            DrainTiles(restored);
+            Check(restoredClient.Get(2,2,4,style).SequenceEqual(DiskPixels(savedRequest,style)), "Every persisted palette survives restart and network transfer");
+        }
+        Check(restored.DiskHits==1 && restored.Samples==0, "One disk read serves every palette without sampling");
+        long sentBefore=restored.WireBytes;
+        diskPermission=false;
+        restored.Request("denied",new TerrainTileRequest {Id=44,PageX=2,PageZ=2,Step=4});
+        restored.Tick(20,65536);
+        Check(restored.WireBytes==sentBefore, "Persisted tiles do not bypass permission checks");
+    }
+
+    // Disk reads must bypass the busy sampling/rendering worker.
+    using(var coldStarted=new ManualResetEventSlim())
+    using(var releaseCold=new ManualResetEventSlim())
+    {
+        var received=new List<TerrainTileBatch>();
+        using var duringCold=new TerrainTileService(10000,10000,_=>true,
+            (_,_)=>{coldStarted.Set();if(!releaseCold.Wait(5000))throw new Exception("Cold sampling timeout");return new FastMapTerrainSamplerColumn(42);},
+            (r,g,s)=>DiskPixels(r,s),(_,b)=>received.Add(b),diskCache:new TerrainTileDiskCache(persistentRoot,identity.Fingerprint));
+        DrainTiles(duringCold);
+        duringCold.Request("reader",new TerrainTileRequest {Id=91,PageX=6,PageZ=6,Step=32});
+        duringCold.Tick(20,65536);
+        try
+        {
+            Check(coldStarted.Wait(5000), "Cold generation deliberately held open");
+            duringCold.Request("reader",new TerrainTileRequest {Id=92,PageX=2,PageZ=2,Step=4,CachedOnly=true});
+            var timer=System.Diagnostics.Stopwatch.StartNew();
+            while(!received.Any(b=>b.Id==92 && b.Data.Length>0) && timer.ElapsedMilliseconds<3000)
+            {duringCold.Tick(20,65536);Thread.Sleep(1);}
+            Check(received.Any(b=>b.Id==92 && b.Data.Length>0) && duringCold.DiskHits==1,
+                "Persisted cached-only delivery completes while cold sampling is blocked");
+        }
+        finally { releaseCold.Set(); }
+        DrainTiles(duringCold);
+    }
+
+    string tileFile=Path.Combine(persistentRoot,identity.Fingerprint,"2_2_4.fmt");
+    foreach(string corruption in new[]{"checksum","truncated","oversized-length","missing"})
+    {
+        using var disk=new TerrainTileDiskCache(persistentRoot,identity.Fingerprint);
+        Check(SpinWait.SpinUntil(()=>disk.Ready,5000), "Disk index initializes off the caller thread");
+        byte[] good=File.ReadAllBytes(tileFile);
+        if(corruption=="missing") File.Delete(tileFile);
+        else
+        {
+            byte[] damaged=good.ToArray();
+            if(corruption=="checksum") damaged[^1]^=1;
+            if(corruption=="truncated") damaged=damaged[..20];
+            if(corruption=="oversized-length") System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(damaged.AsSpan(17),int.MaxValue);
+            File.WriteAllBytes(tileFile,damaged);
+        }
+        int regenerated=0;
+        using(var recovery=new TerrainTileService(10000,10000,_=>true,
+            (_,_)=>{regenerated++;return new FastMapTerrainSamplerColumn(42);},(r,g,s)=>DiskPixels(r,s),(_,_)=>{},diskCache:disk))
+        {
+            recovery.Request("repair",savedRequest);
+            DrainTiles(recovery);
+            Check(regenerated==66049 && recovery.DiskHits==0 && recovery.DiskCachedPages>=1,
+                "Missing/corrupt/oversized persisted file regenerates without failing the request");
+        }
+    }
+
+    string boundedRoot=Path.Combine(diskTestRoot,"bounded");
+    using(var bounded=new TerrainTileDiskCache(boundedRoot,identity.Fingerprint,megabytes:1))
+    {
+        Check(SpinWait.SpinUntil(()=>bounded.Ready,5000), "Bounded cache initialized");
+        var noise=new Random(17);
+        var payloads=Enumerable.Range(0,3).Select(_=>{var data=new byte[256*256*4];noise.NextBytes(data);return new EncodedTerrainTile(data,false);}).ToArray();
+        bounded.Store(savedRequest,payloads);
+        var second=new TerrainTileRequest{Id=2,PageX=3,PageZ=2,Step=4};
+        bounded.Store(second,payloads,prewarm:true);
+        Check(bounded.Size(savedRequest)>0 && bounded.Size(second)==0 && bounded.Bytes<=1024*1024,
+            "Speculative disk writes stop at capacity without endlessly evicting prewarm targets");
+        bounded.Store(second,payloads);
+        Check(bounded.Size(savedRequest)==0 && bounded.Size(second)>0 && bounded.CachedPages==1 && bounded.Bytes<=1024*1024,
+            "Demanded tiles evict older disk files within the size budget");
+        Check(bounded.TryRead(second,out var rawRead) && rawRead.Wait(5000) && rawRead.Result![2].Data.SequenceEqual(payloads[2].Data),
+            "Incompressible raw tiles persist without losing pixel bits");
+    }
+    using(var changedCache=new TerrainTileDiskCache(boundedRoot,(identity with{Rendering="new-renderer"}).Fingerprint,megabytes:1))
+    {
+        Check(SpinWait.SpinUntil(()=>changedCache.Ready,5000) && changedCache.CachedPages==0,
+            "Changed rendering namespace cannot load prior settings");
+        changedCache.Store(savedRequest,Enumerable.Range(0,3).Select(s=>EncodedTerrainTile.Encode(DiskPixels(savedRequest,s))).ToArray());
+        Check(changedCache.Bytes<=1024*1024, "Obsolete namespaces share the same disk budget");
+    }
+    string unavailable=Path.Combine(diskTestRoot,"not-a-directory");
+    File.WriteAllText(unavailable,"blocked");
+    int warnings=0;
+    using(var fallback=new TerrainTileService(10000,10000,_=>true,(_,_)=>new FastMapTerrainSamplerColumn(42),
+        (r,g,s)=>DiskPixels(r,s),(_,_)=>{},diskCache:new TerrainTileDiskCache(unavailable,identity.Fingerprint,log:_=>warnings++)))
+    {
+        fallback.Request("reader",new TerrainTileRequest{Id=5,PageX=2,PageZ=2,Step=32});
+        DrainTiles(fallback);
+        Check(fallback.Samples>0 && fallback.DiskCachedPages==0 && warnings==1,
+            "Unavailable disk falls back to memory and generation with one diagnostic");
+    }
+    string burstRoot=Path.Combine(diskTestRoot,"burst");
+    using(var seedCache=new TerrainTileDiskCache(burstRoot,identity.Fingerprint))
+    {
+        Check(SpinWait.SpinUntil(()=>seedCache.Ready,5000), "Burst fixture initialized");
+        for(int i=0;i<40;i++)
+        {
+            var request=new TerrainTileRequest{Id=i+1,PageX=i%8,PageZ=i/8,Step=32};
+            seedCache.Store(request,Enumerable.Range(0,3).Select(s=>new EncodedTerrainTile(new byte[32*32*4],false)).ToArray());
+        }
+    }
+    int diskBurstCompleted=0;
+    using(var burst=new TerrainTileService(10000,10000,_=>true,
+        (_,_)=>throw new Exception("Disk burst regenerated"),(_,_,_)=>throw new Exception("Disk burst rerendered"),
+        (_,b)=>{if(b.Data.Length>0 && b.Offset+b.Data.Length==b.TotalBytes)diskBurstCompleted++;},cacheMegabytes:1,
+        diskCache:new TerrainTileDiskCache(burstRoot,identity.Fingerprint)))
+    {
+        // Queue even before the startup scan has completed.
+        for(int i=0;i<40;i++) burst.Request("burst",new TerrainTileRequest{Id=i+1,PageX=i%8,PageZ=i/8,Step=32,CachedOnly=true});
+        var timer=System.Diagnostics.Stopwatch.StartNew();
+        long maximumPool=0;
+        while(burst.IsWorking || burst.PendingRequests>0)
+        {
+            burst.Tick(20,65536);
+            maximumPool=Math.Max(maximumPool,burst.PoolBytes);
+            if(timer.ElapsedMilliseconds>5000)throw new Exception("Disk burst timeout");
+            Thread.Sleep(1);
+        }
+        Check(diskBurstCompleted==40 && burst.DiskHits==40 && burst.Samples==0, "Entire persisted burst is served after restart without cold generation");
+        Check(maximumPool<=1024*1024, "Concurrent disk-read reservations and ready tiles stay within the RAM budget");
+    }
+    using(var shrunken=new TerrainTileDiskCache(burstRoot,identity.Fingerprint,megabytes:1))
+    {
+        Check(SpinWait.SpinUntil(()=>shrunken.Ready,5000), "Cache reopened with explicit disk limit");
+        Check(shrunken.Bytes==Directory.EnumerateFiles(burstRoot,"*.fmt",SearchOption.AllDirectories).Sum(p=>new FileInfo(p).Length),
+            "Disk accounting includes files restored from a previous process");
+    }
+}
+finally { Directory.Delete(diskTestRoot,recursive:true); }
+Console.WriteLine($"PASS {assertions} assertions including persistent tile reuse, corruption recovery, independent disk reads and bounded storage.");

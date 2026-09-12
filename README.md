@@ -52,6 +52,9 @@ The server creates `VintagestoryData/ModConfig/fastmap-server.json`:
   "AdaptiveMaxSamplesPerTick": 16384,
   "SampleCacheMegabytes": 64,
   "TileCacheMegabytes": 256,
+  "PersistTileCache": true,
+  "TileDiskCacheMegabytes": 1024,
+  "TileCacheRevision": 0,
   "MaxTransferKilobytesPerTick": 256,
   "LogSamplingStats": true
 }
@@ -63,7 +66,13 @@ The multiplayer **Prefetch locally** switch only controls extra client downloads
 
 Clients submit missing pages in bounded bursts (64 requests per network tick). The server immediately acknowledges each accepted request and pushes its result when ready; queued requests receive an update every five seconds. Up to 2,048 requests per player and 4,096 globally hold only metadata. Cached tiles bypass generation, and the worker continuously processes the remaining queue. The client retains received tiles compressed in a separate 32 MiB pool and expands them when the map worker needs their pixels. Visible requests start near the viewport centre, and completed tiles remain reserved until applied so already-rendered tiles are not reloaded every frame.
 
-`TileCacheMegabytes` bounds compressed pixel variants plus the active worker's memory reservation. Detailed samples are temporary and discarded after rendering. Cache entries are shared across players, palettes and reconnects. The separate `SampleCacheMegabytes` pool serves optional climate overlays using the sample endpoint. Both pools are memory-only and reset on server restart; server prewarming rebuilds nearby tiles. Very distant areas still require cold generation. This is not whole-world pre-generation.
+`TileCacheMegabytes` bounds compressed pixel variants plus active generation and disk-read memory reservations. Detailed samples are temporary and discarded after rendering. Cache entries are shared across players, palettes and reconnects. The separate `SampleCacheMegabytes` pool serves optional climate overlays using the sample endpoint and remains memory-only.
+
+`PersistTileCache` defaults to `true`. When server Pregen is enabled on a dedicated server, completed Normal, Fog of War and True Colour tiles are saved immediately under `VintagestoryData/ModData/FastMapServer/<world-key>/<cache-identity>`. Restarting indexes these compressed files without resampling or loading all of them into RAM. Requested files load on a separate disk worker, so cached delivery can proceed while another page is generating. Saved prewarm targets are skipped. Only completed pixel tiles are persisted; unfinished work resumes through normal generation after restart.
+
+`TileDiskCacheMegabytes` defaults to 1,024 MiB per world and accepts 1–16,384 MiB. Old cache identities count toward the same limit; a hard 16,384-file limit also applies. Demanded tiles can evict older files, while speculative writes do not evict current cached tiles just to regenerate them later. Disk limits and RAM limits remain independent. Writes are atomic and checksummed; damaged or missing files regenerate, and unavailable storage falls back to the memory cache. Temporary writes can briefly occupy additional space.
+
+World identity, seed, dimensions, stored world configuration, game/mod versions and effective rendering settings determine cache identity. Changes select fresh server and client caches. For terrain-generator settings stored externally to the world's configuration, increment `TileCacheRevision` (default `0`) to invalidate both caches after changing them. Setting `PersistTileCache=false` disables disk reads and writes but leaves existing files intact for later reuse. Master Pregen opt-out and integrated single-player hosting do not open this server disk cache. Restart after changing these settings. Areas not yet cached still require cold generation; this is not whole-world pre-generation.
 
 Multiplayer base rendering settings come from the server's `fastmap.json`, or Fast Map defaults if absent; the server uses its packaged palette assets when client texture assets are unavailable. Palette selection and seasonal tint remain client controls. Single-player rendering uses the same shared renderer with local settings and assets.
 

@@ -17,8 +17,13 @@ public sealed class FastMapServerConfig
     public int AdaptiveMaxSamplesPerTick { get; set; } = 16384;
     public int SampleCacheMegabytes { get; set; } = 64;
     public int TileCacheMegabytes { get; set; } = 256;
+    public bool PersistTileCache { get; set; } = true;
+    public int TileDiskCacheMegabytes { get; set; } = 1024;
+    // Increment after changing generator settings stored outside World.Config.
+    public int TileCacheRevision { get; set; } = 0;
     public int MaxTransferKilobytesPerTick { get; set; } = 256;
     public bool LogSamplingStats { get; set; } = true;
 
     internal bool ShouldPrewarm(bool isDedicated) => isDedicated && EnableTerrainSampling && EnableServerPrewarm;
+    internal bool ShouldPersist(bool isDedicated) => isDedicated && EnableTerrainSampling && PersistTileCache;
 }

@@ -26,6 +26,8 @@ internal sealed class TerrainTileService : IDisposable
     private readonly BlockingCollection<Build> queue;
     private readonly Thread thread;
     private readonly bool backgroundSampling;
+    private readonly TerrainTileDiskCache? disk;
+    private readonly Dictionary<(int,int,int), DiskRead> diskReads = new();
     private Build? work;
     private long serial;
     private int cursor;
@@ -35,20 +37,25 @@ internal sealed class TerrainTileService : IDisposable
     public long WireBytes {get;private set;}
     public long CacheHits {get;private set;}
     public long Prewarmed {get;private set;}
-    public long PoolBytes=>cache.Values.Sum(e=>e.Bytes)+(work?.Reservation??0);
+    public long PoolBytes=>cache.Values.Sum(e=>e.Bytes)+(work?.Reservation??0)+diskReads.Values.Sum(r=>r.Reservation);
+    public long DiskHits {get;private set;}
+    public int DiskCachedPages=>disk?.CachedPages??0;
+    public long DiskBytes=>disk?.Bytes??0;
     public int CachedPages=>cache.Count;
     public int PendingRequests=>subscriptions.Count;
-    public int PendingPrewarm=>targets.Count(t=>!cache.ContainsKey(Key(t)));
-    public bool IsWorking=>work!=null;
+    public int PendingPrewarm=>targets.Count(t=>!cache.ContainsKey(Key(t)) && !OnDisk(t));
+    public bool IsWorking=>work!=null || diskReads.Count>0 || disk?.Ready==false;
     public bool Background=>backgroundSampling;
     public TerrainTileService(int sizeX,int sizeZ,Func<string,bool> allowed,
         Func<int,int,FastMapTerrainSamplerColumn> sample,Func<TerrainTileRequest,FastMapTerrainSamplerColumn[],int,int[]> render,
-        Action<string,TerrainTileBatch> send,int cacheMegabytes=64,int transferKilobytes=256,bool background=true,Action<string>? log=null,Func<long>? clock=null)
+        Action<string,TerrainTileBatch> send,int cacheMegabytes=64,int transferKilobytes=256,bool background=true,Action<string>? log=null,Func<long>? clock=null,
+        TerrainTileDiskCache? diskCache=null)
     {
         this.sizeX=sizeX;this.sizeZ=sizeZ;this.allowed=allowed;this.sample=sample;this.render=render;this.send=send;this.log=log;
         this.clock=clock??(()=>Environment.TickCount64);
         limit=Math.Clamp(cacheMegabytes,1,256)*1024L*1024;transferLimit=Math.Clamp(transferKilobytes,32,1024)*1024;
         backgroundSampling=background;
+        disk=diskCache;
         // Sampling may require the game thread, but rendering the completed grid
         // and compressing pixels never do. Both paths share one bounded worker.
         queue=new BlockingCollection<Build>(1);
@@ -57,6 +64,7 @@ internal sealed class TerrainTileService : IDisposable
         thread.Start();
     }
     private static (int,int,int) Key(TerrainTileRequest r)=>(r.PageX,r.PageZ,r.Step);
+    private bool OnDisk(TerrainTileRequest r)=>disk?.Size(r)>0;
     public void Request(string owner,TerrainTileRequest request)
     {
         if(disposed)return;
@@ -65,7 +73,8 @@ internal sealed class TerrainTileService : IDisposable
         if(subscriptions.Any(s=>s.Owner==owner&&s.Request.Id==request.Id))return;
         bool hit=cache.TryGetValue(Key(request),out var entry);
         // A cache lookup must never enqueue sampling or wait behind a cold request.
-        if(request.CachedOnly&&!hit){send(owner,new TerrainTileBatch{Id=request.Id,CacheMiss=true});return;}
+        if(request.CachedOnly&&!hit&&!OnDisk(request)&&disk?.Ready!=false)
+        {send(owner,new TerrainTileBatch{Id=request.Id,CacheMiss=true});return;}
         if(subscriptions.Count>=4096||subscriptions.Count(s=>s.Owner==owner)>=2048)
         {Fail(owner,request.Id,"Terrain tile server busy");return;}
         if(hit){CacheHits++;entry!.Used=++serial;entry.Demanded=true;}
@@ -107,7 +116,8 @@ internal sealed class TerrainTileService : IDisposable
         while(cache.Count>=2048||PoolBytes+needed>limit)
         {
             var old=cache.Where(e=>!subscriptions.Any(s=>Key(s.Request)==e.Key)
-                && (demand||(!e.Value.Demanded&&!targets.Any(t=>Key(t)==e.Key))))
+                && (demand||(!e.Value.Demanded&&(!targets.Any(t=>Key(t)==e.Key)
+                    || OnDisk(new TerrainTileRequest{PageX=e.Key.Item1,PageZ=e.Key.Item2,Step=e.Key.Item3})))))
                 .OrderBy(e=>e.Value.Used).FirstOrDefault();
             if(old.Value==null)return false;
             cache.Remove(old.Key);
@@ -123,6 +133,7 @@ internal sealed class TerrainTileService : IDisposable
         foreach(var sub in subscriptions)
             if(sub.Offset==0&&clock()-sub.LastAcknowledgement>=5000)Acknowledge(sub);
         CancelUnneeded();
+        CompleteDiskReads();
         if(work!=null&&work.Completion.Task.IsCompleted)
         {
             var done=work;work=null;
@@ -162,11 +173,13 @@ internal sealed class TerrainTileService : IDisposable
             }
             // Finish a tile before interleaving another large payload: queued requests only hold metadata.
         }
-        if(work==null)
+        QueueDiskReads();
+        if(work==null && disk?.Ready!=false)
         {
-            var request=subscriptions.FirstOrDefault(s=>!cache.ContainsKey(Key(s.Request)))?.Request;
+            var request=subscriptions.FirstOrDefault(s=>!s.Request.CachedOnly && !cache.ContainsKey(Key(s.Request))
+                && !OnDisk(s.Request) && !diskReads.ContainsKey(Key(s.Request)))?.Request;
             bool prewarm=request==null;
-            request??=paused?null:targets.FirstOrDefault(t=>!cache.ContainsKey(Key(t)));
+            request??=paused?null:targets.FirstOrDefault(t=>!cache.ContainsKey(Key(t)) && !OnDisk(t) && !diskReads.ContainsKey(Key(t)));
             if(request!=null)
             {
                 long needed=(long)(request.Width+1)*(request.Width+1)*32+(long)request.Width*request.Width*24+131072;
@@ -209,6 +222,8 @@ internal sealed class TerrainTileService : IDisposable
                 tiles[style]=EncodedTerrainTile.Encode(render(build.Request,build.Grid,style));
             }
             build.Cancel.Token.ThrowIfCancellationRequested();
+            disk?.Store(build.Request,tiles,build.Prewarm);
+            build.Cancel.Token.ThrowIfCancellationRequested();
             build.Completion.TrySetResult(tiles);
         }
         catch(OperationCanceledException){build.Completion.TrySetCanceled();}
@@ -229,12 +244,58 @@ internal sealed class TerrainTileService : IDisposable
         }
     }
     private void Fail(string owner,int id,string error)=>send(owner,new TerrainTileBatch{Id=id,Error=error});
+    private void CompleteDiskReads()
+    {
+        foreach (var item in diskReads.Where(r=>r.Value.Task.IsCompleted).ToArray())
+        {
+            diskReads.Remove(item.Key);
+            var result=item.Value.Task.GetAwaiter().GetResult();
+            if(result==null) continue; // Invalid/missing files become ordinary cold requests.
+            bool wanted=subscriptions.Any(s=>Key(s.Request)==item.Key);
+            if(!wanted) continue;
+            cache[item.Key]=new Entry(result,++serial,true);
+            DiskHits++;
+            log?.Invoke($"tile disk hit page={item.Key.Item1},{item.Key.Item2} step={item.Key.Item3} bytes={result.Sum(t=>t.Data.Length)}");
+        }
+    }
+
+    private void QueueDiskReads()
+    {
+        if(disk==null || !disk.Ready) return;
+        foreach(var sub in subscriptions.ToArray())
+        {
+            var key=Key(sub.Request);
+            if(cache.ContainsKey(key) || diskReads.ContainsKey(key) || (work!=null && Key(work.Request)==key)) continue;
+            long size=disk.Size(sub.Request);
+            if(size==0)
+            {
+                if(sub.Request.CachedOnly)
+                {
+                    send(sub.Owner,new TerrainTileBatch{Id=sub.Request.Id,CacheMiss=true});
+                    subscriptions.Remove(sub);
+                }
+                continue;
+            }
+            if(diskReads.Count>=32) break;
+            long reservation=size+1024;
+            if(reservation>limit)
+            {
+                Fail(sub.Owner,sub.Request.Id,"Terrain tile exceeds memory cache limit");
+                subscriptions.Remove(sub);
+                continue;
+            }
+            if(!MakeRoom(reservation,true)) continue;
+            if(disk.TryRead(sub.Request,out var task)) diskReads[key]=new DiskRead(reservation,task);
+        }
+    }
+
     public void Dispose()
     {
         if(disposed)return;disposed=true;work?.Cancel.Cancel();queue.CompleteAdding();thread.Join();
         if(work?.Completion.Task.IsFaulted==true)_=work.Completion.Task.Exception;
-        work?.Cancel.Dispose();work=null;queue.Dispose();cache.Clear();subscriptions.Clear();targets.Clear();
+        work?.Cancel.Dispose();work=null;queue.Dispose();disk?.Dispose();diskReads.Clear();cache.Clear();subscriptions.Clear();targets.Clear();
     }
+    private sealed record DiskRead(long Reservation,Task<EncodedTerrainTile[]?> Task);
     private sealed class Entry
     {
         public readonly EncodedTerrainTile[] Tiles;public long Used;public bool Demanded;

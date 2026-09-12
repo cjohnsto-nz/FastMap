@@ -1,12 +1,16 @@
 using System;
 using System.Diagnostics;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using FastMap.Config;
 using FastMap.Map;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Server;
 using Vintagestory.API.MathTools;
+using Vintagestory.API.Config;
+using Vintagestory.API.Datastructures;
 using Vintagestory.GameContent;
 
 namespace FastMap.Network;
@@ -115,6 +119,7 @@ public sealed class FastMapTerrainSamplingSystem : ModSystem
         config.AdaptiveMaxSamplesPerTick = Math.Clamp(config.AdaptiveMaxSamplesPerTick, 256, 65536);
         config.SampleCacheMegabytes = Math.Clamp(config.SampleCacheMegabytes, 1, 256);
         config.TileCacheMegabytes = Math.Clamp(config.TileCacheMegabytes, 1, 256);
+        config.TileDiskCacheMegabytes = Math.Clamp(config.TileDiskCacheMegabytes, 1, 16384);
         config.MaxTransferKilobytesPerTick = Math.Clamp(config.MaxTransferKilobytesPerTick, 32, 1024);
         config.PrewarmRadiusPages = Math.Clamp(config.PrewarmRadiusPages, 0, 16);
         config.PrewarmSampleStep = Math.Clamp(config.PrewarmSampleStep, 1, 32);
@@ -157,13 +162,33 @@ public sealed class FastMapTerrainSamplingSystem : ModSystem
             int land=Color("land"), ocean=Color("ocean"), edge=Color("wateredge"), seaLevel=api.World.SeaLevel;
             serverRenderingFingerprint = renderer.RenderingFingerprint(seaLevel, land, ocean, edge,
                 FastMapTerrainSamplerAdapter.InstalledTerrainSamplerVersion(api) ?? "unavailable");
+            string worldConfiguration = TerrainRenderingIdentity.Hash(writer => WriteCacheAttribute(writer, api.World.Config));
+            string modVersions = TerrainRenderingIdentity.Hash(writer =>
+            {
+                writer.Write(GameVersion.ShortGameVersion);
+                foreach (var mod in api.ModLoader.Mods.OrderBy(m => m.Info?.ModID, StringComparer.Ordinal))
+                {
+                    writer.Write(mod.Info?.ModID ?? ""); writer.Write(mod.Info?.Version ?? "");
+                }
+            });
+            serverRenderingFingerprint = new TerrainTileCacheIdentity(api.World.SavegameIdentifier, api.World.Seed,
+                api.WorldManager.MapSizeX, api.WorldManager.MapSizeZ, worldConfiguration, modVersions,
+                serverRenderingFingerprint, config.TileCacheRevision).Fingerprint;
+            TerrainTileDiskCache? disk = null;
+            if (config.ShouldPersist(api.Server.IsDedicated) && local != null)
+            {
+                string worldKey = TerrainRenderingIdentity.Hash(writer => writer.Write(api.World.SavegameIdentifier));
+                disk = new TerrainTileDiskCache(Path.Combine(GamePaths.DataPath, "ModData", "FastMapServer", worldKey),
+                    serverRenderingFingerprint, config.TileDiskCacheMegabytes,
+                    message => api.Logger.Notification("[FastMap] " + message));
+            }
             tileService = new TerrainTileService(api.WorldManager.MapSizeX,api.WorldManager.MapSizeZ,IsAllowed,
                 (x,z)=>local!.SampleColumn(x,z),
                 (request,grid,style)=>renderer.Render(grid,request.PageX*1024,request.PageZ*1024,request.Step,seaLevel,land,ocean,edge,style),
                 (uid,batch)=> {if(api.World.PlayerByUid(uid) is IServerPlayer player)serverChannel!.SendPacket(batch,player);},
                 config.TileCacheMegabytes,config.MaxTransferKilobytesPerTick,
                 background:config.BackgroundSampling && local?.SupportsBackgroundSampling==true,
-                log:message=>{if(config.LogSamplingStats)api.Logger.Notification("[FastMap] "+message);});
+                log:message=>{if(config.LogSamplingStats)api.Logger.Notification("[FastMap] "+message);}, diskCache:disk);
             api.Logger.Notification("[FastMap] Server terrain bridge ready; sampler available: {0}; enabled: {1}; background: {2}; serverPrewarm: {3}.", local != null, config.EnableTerrainSampling, tileService.Background, config.EnableServerPrewarm);
             RefreshPrewarmTargets();
         });
@@ -200,9 +225,10 @@ public sealed class FastMapTerrainSamplingSystem : ModSystem
         if (now - statsTime >= 10000)
         {
             if(config.LogSamplingStats && tileService!=null && (tileService.Samples!=previousTileSamples || tileService.WireBytes!=previousTileWire || tileService.IsWorking))
-                sapi!.Logger.Notification("[FastMap] tile stats processCpuPct={0:0.0} intervalMs={1} samples={2} wireBytes={3} cached={4} poolBytes={5} prewarmed={6} prewarmPending={7} pending={8} cacheHits={9} background={10}",
+                sapi!.Logger.Notification("[FastMap] tile stats processCpuPct={0:0.0} intervalMs={1} samples={2} wireBytes={3} cached={4} poolBytes={5} prewarmed={6} prewarmPending={7} pending={8} cacheHits={9} background={10} diskCached={11} diskBytes={12} diskHits={13}",
                     processCpuPercent,interval,tileService.Samples-previousTileSamples,tileService.WireBytes-previousTileWire,tileService.CachedPages,tileService.PoolBytes,
-                    tileService.Prewarmed,tileService.PendingPrewarm,tileService.PendingRequests,tileService.CacheHits,tileService.Background);
+                    tileService.Prewarmed,tileService.PendingPrewarm,tileService.PendingRequests,tileService.CacheHits,tileService.Background,
+                    tileService.DiskCachedPages,tileService.DiskBytes,tileService.DiskHits);
             previousTileSamples=tileService?.Samples??0;previousTileWire=tileService?.WireBytes??0;
             if (config.LogSamplingStats && (service.Samples != previousSamples || service.WireBytes != previousWire || service.PendingRequests > 0))
                 sapi!.Logger.Notification(
@@ -223,6 +249,21 @@ public sealed class FastMapTerrainSamplingSystem : ModSystem
         return !disposed && local != null && config.EnableTerrainSampling
             && sapi?.World.PlayerByUid(uid) is IServerPlayer player
             && (string.IsNullOrWhiteSpace(config.RequiredPrivilege) || player.HasPrivilege(config.RequiredPrivilege));
+    }
+
+    private static void WriteCacheAttribute(BinaryWriter writer, IAttribute attribute)
+    {
+        writer.Write(attribute.GetAttributeId());
+        if (attribute is ITreeAttribute tree)
+        {
+            writer.Write(tree.Count);
+            foreach (var item in tree.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+            {
+                writer.Write(item.Key);
+                WriteCacheAttribute(writer, item.Value);
+            }
+        }
+        else attribute.ToBytes(writer);
     }
 
     private void RefreshPrewarmTargets()
