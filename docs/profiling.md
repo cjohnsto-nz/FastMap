@@ -1,12 +1,12 @@
 # FastMap Profiling Guide
 
-FastMap release builds intentionally do not include profiling command registration, Harmony profiling patches, or server-side profiling hooks. This keeps the public mod client-side only and prevents disabled profiling paths from affecting JIT/runtime behavior.
+FastMap release builds intentionally do not include profiling command registration, Harmony profiling patches, or server-side profiling hooks. The optional server terrain-sampling bridge is independent of profiling.
 
 Use this guide when you need to re-enable profiling for a development build.
 
 ## Release Defaults
 
-- `modinfo.json` uses `"side": "Client"`.
+- `modinfo.json` uses `"side": "Universal"`, with both required-on-side flags false. The map and profiling systems still load only on the client; the sampling bridge also loads on the server.
 - `deploy.ps1` builds `Release`.
 - `Config/FastMapConfig.AutoStartProfilingOnStartup` defaults to `false`.
 - `FASTMAPPROFILING` is defined only for `Debug` builds in `FastMap.csproj`.
@@ -15,7 +15,7 @@ Use this guide when you need to re-enable profiling for a development build.
 
 ## Client-Only Profiling
 
-Use this for FastMap map-layer, cache, and client packet timing without making the mod server-side.
+Use this for FastMap map-layer, cache, and client packet timing.
 
 1. Build a Debug package:
 
@@ -29,7 +29,7 @@ Use this for FastMap map-layer, cache, and client packet timing without making t
    bin\Debug\ModPackage\FastMap
    ```
 
-3. Keep `modinfo.json` as `"side": "Client"`.
+3. Keep the standard `modinfo.json`; the profiling system loads only on the client.
 
 4. In `VintagestoryData\ModConfig\fastmap.json`, set one of:
 
@@ -61,11 +61,7 @@ Use this for FastMap map-layer, cache, and client packet timing without making t
 
 Use this only for lab builds. Do not ship this configuration.
 
-1. Change `modinfo.json` temporarily:
-
-   ```json
-   "side": "Universal"
-   ```
+1. Keep `modinfo.json` as `"side": "Universal"`.
 
 2. Re-enable server loading for the profiling ModSystem in `Profiling/FastMapProfilingModSystem.cs`.
 

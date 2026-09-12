@@ -3,10 +3,12 @@
   "modid": "fastmap",
   "name": "Fast Map",
   "authors": ["chrisunfocused"],
-  "version": "0.5.2",
+  "version": "0.6.0",
   "description": "Map, but Fast",
   "dependencies": {
     "game": "1.22.0"
   },
-  "side": "Client"
+  "side": "Universal",
+  "requiredOnClient": false,
+  "requiredOnServer": false
 }

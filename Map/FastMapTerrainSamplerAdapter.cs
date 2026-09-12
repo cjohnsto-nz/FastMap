@@ -1,70 +1,11 @@
 using System;
 using System.Reflection;
+using FastMap.Network;
+using Vintagestory.API.Client;
 using ICoreAPI = Vintagestory.API.Common.ICoreAPI;
 using Mod = Vintagestory.API.Common.Mod;
 
 namespace FastMap.Map;
-
-public readonly struct FastMapTerrainSamplerColumn
-{
-    public FastMapTerrainSamplerColumn(int height)
-    {
-        Height = height;
-        HasClimate = false;
-        Rainfall = 0f;
-        Temperature = 0f;
-        ClimateColor = 0;
-        ForestDensity = 0f;
-        ShrubDensity = 0f;
-    }
-
-    public FastMapTerrainSamplerColumn(
-        int height,
-        float rainfall,
-        float temperature,
-        int climateColor,
-        float forestDensity = 0f,
-        float shrubDensity = 0f)
-    {
-        Height = height;
-        HasClimate = true;
-        Rainfall = NormalizeFraction(rainfall);
-        Temperature = NormalizeTemperature(temperature);
-        ClimateColor = climateColor;
-        ForestDensity = NormalizeFraction(forestDensity);
-        ShrubDensity = NormalizeFraction(shrubDensity);
-    }
-
-    public int Height { get; }
-    public bool HasClimate { get; }
-    public float Rainfall { get; }
-    public float Temperature { get; }
-    public int ClimateColor { get; }
-    public float ForestDensity { get; }
-    public float ShrubDensity { get; }
-
-    public FastMapTerrainSamplerColumn WithHeight(int height)
-    {
-        return HasClimate
-            ? new FastMapTerrainSamplerColumn(height, Rainfall, Temperature, ClimateColor, ForestDensity, ShrubDensity)
-            : new FastMapTerrainSamplerColumn(height);
-    }
-
-    private static float NormalizeFraction(float value)
-    {
-        return Math.Clamp(value > 1f ? value / 255f : value, 0f, 1f);
-    }
-
-    private static float NormalizeTemperature(float value)
-    {
-        if (value is >= 0f and <= 1f)
-        {
-            return value;
-        }
-
-        return Math.Clamp(value > 40f ? value / 255f : (value + 20f) / 60f, 0f, 1f);
-    }
-}
 
 internal sealed class FastMapTerrainSamplerAdapter
 {
@@ -73,6 +14,8 @@ internal sealed class FastMapTerrainSamplerAdapter
 
     private readonly Func<int, int, int> sampleHeight;
     private readonly Func<int, int, FastMapTerrainSamplerColumn>? sampleColumn;
+    private RemoteTerrainSampler? remote;
+    private RemoteTerrainTiles? tiles;
 
     private FastMapTerrainSamplerAdapter(Func<int, int, int> sampleHeight, Func<int, int, FastMapTerrainSamplerColumn>? sampleColumn)
     {
@@ -81,6 +24,28 @@ internal sealed class FastMapTerrainSamplerAdapter
     }
 
     public bool HasColumnSamples => sampleColumn != null;
+    public bool IsAvailable => remote?.Available ?? true;
+    public bool IsRemote => remote != null;
+    public bool SupportsBackgroundSampling { get; private set; }
+
+    internal static FastMapTerrainSamplerAdapter CreateRemote(RemoteTerrainSampler remote, RemoteTerrainTiles tiles)
+    {
+        FastMapTerrainSamplerColumn Sample(int x, int z) => remote.SampleGrid(x, z, 1, 1, 1)[0];
+        return new FastMapTerrainSamplerAdapter((x, z) => Sample(x, z).Height, Sample) { remote = remote, tiles = tiles };
+    }
+
+    public int[] SampleTile(int x,int z,int step,int style) => tiles?.Get(x,z,step,style)
+        ?? throw new InvalidOperationException("Server terrain tiles are unavailable");
+
+    public FastMapTerrainSamplerColumn[] SampleGrid(int x, int z, int width, int height, int step)
+    {
+        if (remote != null) return remote.SampleGrid(x, z, width, height, step);
+        var samples = new FastMapTerrainSamplerColumn[checked(width * height)];
+        for (int row = 0; row < height; row++)
+            for (int col = 0; col < width; col++)
+                samples[row * width + col] = SampleColumn(x + col * step, z + row * step);
+        return samples;
+    }
 
     public int GetBlockColumnHeight(int blockX, int blockZ)
     {
@@ -96,6 +61,12 @@ internal sealed class FastMapTerrainSamplerAdapter
 
     public static FastMapTerrainSamplerAdapter? TryCreate(ICoreAPI? api = null)
     {
+        // An assembly on a multiplayer client cannot expose the remote server's sampler.
+        if (api is ICoreClientAPI client && !client.IsSinglePlayer)
+        {
+            var adapter = client.ModLoader.GetModSystem<FastMapTerrainSamplingSystem>()?.ClientAdapter;
+            return adapter?.IsAvailable == true ? adapter : null;
+        }
         try
         {
             if (!IsInstalledVersionSupported(api))
@@ -126,7 +97,13 @@ internal sealed class FastMapTerrainSamplerAdapter
                 }
 
                 Func<int, int, int> sampleHeight = getHeightMethod.CreateDelegate<Func<int, int, int>>(instance);
-                return new FastMapTerrainSamplerAdapter(sampleHeight, TryCreateColumnSample(instance, modType, sampleHeight));
+                return new FastMapTerrainSamplerAdapter(sampleHeight, TryCreateColumnSample(instance, modType, sampleHeight))
+                {
+                    // Audited 1.3.0 uses thread-local contexts and locked map generators.
+                    // Watersheds delegates to another mod whose concurrency contract is unknown.
+                    SupportsBackgroundSampling = api != null && InstalledTerrainSamplerVersion(api) == "1.3.0"
+                        && modType.GetProperty("WatershedsLoaded")?.GetValue(instance) is false
+                };
             }
         }
         catch

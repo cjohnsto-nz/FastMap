@@ -21,6 +21,8 @@
   "fastmap-pregen-season-october": "October",
   "fastmap-pregen-season-november": "November",
   "fastmap-pregen-season-december": "December",
+  "fastmap-pregen-prefetch": "Prefetch locally",
+  "fastmap-pregen-prefetch-hover": "Download nearby Pregen tiles while the map is closed. Server pre-generation runs independently of this switch.",
   "fastmap-pregen-background": "Background",
   "fastmap-pregen-background-hover": "Pregenerate terrain while the map is closed. Will impact performance while generating."
 }

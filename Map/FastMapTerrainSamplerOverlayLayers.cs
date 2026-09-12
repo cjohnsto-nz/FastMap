@@ -197,9 +197,10 @@ public abstract class FastMapTerrainSamplerOverlayLayer : MapLayer
         {
             visibleChunks.Add(coord);
             EnsurePageLoaded(PageKey(coord));
-            if (generated < MaxChunksPerViewChange && EnsureChunk(coord))
+            if (generated < MaxChunksPerViewChange && !IsChunkReady(coord))
             {
                 generated++;
+                EnsureChunk(coord);
             }
         }
 
@@ -222,9 +223,10 @@ public abstract class FastMapTerrainSamplerOverlayLayer : MapLayer
             }
 
             EnsurePageLoaded(PageKey(coord));
-            if (EnsureChunk(coord))
+            if (!IsChunkReady(coord))
             {
                 generated++;
+                EnsureChunk(coord);
             }
         }
 
@@ -262,7 +264,19 @@ public abstract class FastMapTerrainSamplerOverlayLayer : MapLayer
         }
 
         mapElem.TranslateViewPosToWorldPos(new Vec2f(args.X - (float)mapElem.Bounds.renderX, args.Y - (float)mapElem.Bounds.renderY), ref hoverWorldPos);
-        FastMapTerrainSamplerColumn sample = sampler!.SampleColumn((int)MathF.Floor((float)hoverWorldPos.X), (int)MathF.Floor((float)hoverWorldPos.Z));
+        FastMapTerrainSamplerColumn sample;
+        try
+        {
+            // Reuse the chunk grid instead of requesting every individual mouse position.
+            int x = (int)Math.Floor(hoverWorldPos.X / ChunkSize) * ChunkSize;
+            int z = (int)Math.Floor(hoverWorldPos.Z / ChunkSize) * ChunkSize;
+            var samples = sampler!.SampleGrid(x, z, SamplesPerAxis, SamplesPerAxis, SampleStep);
+            int col = Math.Clamp((int)(hoverWorldPos.X - x) / SampleStep, 0, SamplesPerAxis - 1);
+            int row = Math.Clamp((int)(hoverWorldPos.Z - z) / SampleStep, 0, SamplesPerAxis - 1);
+            sample = samples[row * SamplesPerAxis + col];
+        }
+        catch (FastMap.Network.TerrainSamplesPendingException) { return; }
+        catch (InvalidOperationException) { return; }
         if (!sample.HasClimate)
         {
             return;
@@ -335,7 +349,7 @@ public abstract class FastMapTerrainSamplerOverlayLayer : MapLayer
     {
         if (samplerLookupAttempted)
         {
-            return sampler != null && sampler.HasColumnSamples;
+            return sampler != null && sampler.IsAvailable && sampler.HasColumnSamples;
         }
 
         samplerLookupAttempted = true;
@@ -369,9 +383,15 @@ public abstract class FastMapTerrainSamplerOverlayLayer : MapLayer
         return true;
     }
 
+    private bool IsChunkReady(FastVec2i chunk)
+    {
+        return pages.TryGetValue(PageKey(chunk), out FastMapPageComponent? page)
+            && page.IsChunkValid(chunk.X - page.BaseChunkCoord.X, chunk.Y - page.BaseChunkCoord.Y);
+    }
+
     private bool EnsureChunk(FastVec2i chunk)
     {
-        if (!EnsureSampler())
+        if (!Active || !EnsureSampler())
         {
             return false;
         }
@@ -386,7 +406,9 @@ public abstract class FastMapTerrainSamplerOverlayLayer : MapLayer
             return false;
         }
 
-        page.SetLowResolutionChunk(chunk, GenerateChunkPixels(chunk), LowResolutionChunkSize);
+        try { page.SetLowResolutionChunk(chunk, GenerateChunkPixels(chunk), LowResolutionChunkSize); }
+        catch (FastMap.Network.TerrainSamplesPendingException) { return false; }
+        catch (InvalidOperationException) { return false; }
         dirtyPages.Add(pageKey);
         return true;
     }
@@ -410,20 +432,9 @@ public abstract class FastMapTerrainSamplerOverlayLayer : MapLayer
 
     private FastMapTerrainSamplerColumn[] BuildChunkSamples(FastVec2i chunk)
     {
-        FastMapTerrainSamplerColumn[] samples = new FastMapTerrainSamplerColumn[SamplesPerChunk];
         int worldX0 = chunk.X * ChunkSize;
         int worldZ0 = chunk.Y * ChunkSize;
-
-        for (int sampleZ = 0; sampleZ < ChunkSize; sampleZ += SampleStep)
-        {
-            for (int sampleX = 0; sampleX < ChunkSize; sampleX += SampleStep)
-            {
-                samples[(sampleZ / SampleStep) * SamplesPerAxis + sampleX / SampleStep] =
-                    sampler!.SampleColumn(worldX0 + sampleX, worldZ0 + sampleZ);
-            }
-        }
-
-        return samples;
+        return sampler!.SampleGrid(worldX0, worldZ0, SamplesPerAxis, SamplesPerAxis, SampleStep);
     }
 
     private void UploadDirtyPages()

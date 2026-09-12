@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Text;
 using FastMap.Config;
+using FastMap.Network;
 using FastMap.Profiling;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
@@ -180,11 +181,11 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private long terrainSamplerFallbackRetriesQueued;
     private long terrainSamplerFallbackRetriesExhausted;
     private long terrainSamplerFallbackSamples;
-    private long terrainSamplerFallbackSeaSamples;
-    private long terrainSamplerFallbackNearSeaSamples;
-    private long terrainSamplerFallbackTrueColorProbes;
-    private long terrainSamplerFallbackTrueColorHits;
-    private long terrainSamplerFallbackTrueColorMisses;
+    private long terrainSamplerFallbackSeaSamples = 0;
+    private long terrainSamplerFallbackNearSeaSamples = 0;
+    private long terrainSamplerFallbackTrueColorProbes = 0;
+    private long terrainSamplerFallbackTrueColorHits = 0;
+    private long terrainSamplerFallbackTrueColorMisses = 0;
     private long terrainSamplerFallbackTrueColorMissingChunk;
     private long terrainSamplerFallbackTrueColorInvalidHeight;
     private long terrainSamplerFallbackTrueColorAir;
@@ -1384,7 +1385,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
     {
         return TerrainFallbackLayerActive
             && HasReadyPageCapacity()
-            && !HasPendingViewportFillWork();
+            && (terrainSamplerAdapter?.IsRemote == true || !HasPendingViewportFillWork());
     }
 
     private bool HasReadyPageCapacity()
@@ -1466,7 +1467,6 @@ public sealed class FastPageMapLayer : RGBMapLayer
             if (terrainFallbackCacheLoadQueue.Count > 0)
             {
                 pageKey = terrainFallbackCacheLoadQueue.Dequeue();
-                queuedTerrainFallbackCacheLoads.Remove(pageKey);
                 return true;
             }
         }
@@ -1659,13 +1659,15 @@ public sealed class FastPageMapLayer : RGBMapLayer
             return false;
         }
 
-        if (fallbackPages.TryGetValue(pageKey, out FastMapPageComponent? fallbackPage) && fallbackPage.HasGpuTexture)
+        if (fallbackPages.TryGetValue(pageKey, out FastMapPageComponent? fallbackPage)
+            && (fallbackPage.HasGpuTexture || fallbackPage.HasPixelBuffer))
         {
             return true;
         }
 
         lock (terrainSamplerLoadLock)
         {
+            if (queuedTerrainSamplerLoads.Contains(pageKey)) return true;
             if (queuedTerrainFallbackCacheLoads.Add(pageKey))
             {
                 terrainFallbackCacheLoadQueue.Enqueue(pageKey);
@@ -1677,6 +1679,10 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void QueueTerrainSamplerLoad(FastVec2i pageKey, bool preferCacheLoad = false)
     {
+        // A partial explored page may ask for its fallback every frame. Once the
+        // fallback is resident, that is not a reason to load and upload it again.
+        if (fallbackPages.TryGetValue(pageKey, out FastMapPageComponent? resident)
+            && (resident.HasGpuTexture || resident.HasPixelBuffer)) return;
         if (disposed)
         {
             Interlocked.Increment(ref terrainSamplerFallbackSkipped);
@@ -1697,6 +1703,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         lock (terrainSamplerLoadLock)
         {
+            if (queuedTerrainFallbackCacheLoads.Contains(pageKey)) return;
             if (!TryReserveTerrainSamplerFallbackPageLocked(pageKey))
             {
                 IncrementTerrainSamplerSkip(TerrainSamplerSkipReason.Limit);
@@ -1865,7 +1872,10 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         int dx = pageKey.X < visibleMinPage.X ? visibleMinPage.X - pageKey.X : pageKey.X > visibleMaxPage.X ? pageKey.X - visibleMaxPage.X : 0;
         int dz = pageKey.Y < visibleMinPage.Y ? visibleMinPage.Y - pageKey.Y : pageKey.Y > visibleMaxPage.Y ? pageKey.Y - visibleMaxPage.Y : 0;
-        return basePriority + Math.Max(dx, dz);
+        long centerDistance = Math.Abs((long)pageKey.X * 2 - visibleMinPage.X - visibleMaxPage.X)
+            + Math.Abs((long)pageKey.Y * 2 - visibleMinPage.Y - visibleMaxPage.Y);
+        return basePriority + (int)Math.Min(int.MaxValue - 100000L,
+            (long)Math.Max(dx, dz) * 4096 + Math.Min(4095, centerDistance));
     }
 
     private bool ShouldQueueTerrainSamplerLoad(FastVec2i pageKey)
@@ -1993,6 +2003,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
                     detail: "synthetic",
                     kind: "inclusive");
                 readyPages.Enqueue(cachedSnapshot);
+                return; // Keep the reservation until the main thread applies the snapshot.
             }
 
             FinishTerrainSamplerLoad(pageKey);
@@ -2000,16 +2011,30 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
 
         Interlocked.Increment(ref terrainSamplerFallbackCacheMisses);
-        if (HasPendingViewportFillWork())
+        if (terrainSamplerAdapter?.IsRemote != true && HasPendingViewportFillWork())
         {
             Interlocked.Increment(ref terrainSamplerFallbackGenerationDeferrals);
             RequeueTerrainSamplerLoad(pageKey);
             return;
         }
 
-        if (!TryBuildPageFromTerrainSampler(pageKey, mode, fallbackDiskCache, out FastMapPageSnapshot sampledSnapshot))
+        FastMapPageSnapshot sampledSnapshot;
+        try
         {
-            Interlocked.Increment(ref terrainSamplerFallbackBuildFailures);
+            if (!TryBuildPageFromTerrainSampler(pageKey, mode, fallbackDiskCache, out sampledSnapshot))
+            {
+                Interlocked.Increment(ref terrainSamplerFallbackBuildFailures);
+                RetryOrFinishTerrainSamplerLoad(pageKey);
+                return;
+            }
+        }
+        catch (TerrainSamplesPendingException)
+        {
+            RetryOrFinishTerrainSamplerLoad(pageKey, waitingForServer: true);
+            return;
+        }
+        catch (InvalidOperationException)
+        {
             RetryOrFinishTerrainSamplerLoad(pageKey);
             return;
         }
@@ -2037,7 +2062,6 @@ public sealed class FastPageMapLayer : RGBMapLayer
             detail: "synthetic",
             kind: "inclusive");
         readyPages.Enqueue(sampledSnapshot);
-        FinishTerrainSamplerLoad(pageKey);
     }
 
     private void ProcessTerrainFallbackCacheLoad(FastVec2i pageKey)
@@ -2046,6 +2070,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
         FastMapTerrainFallbackDiskCache fallbackDiskCache = DiskCacheForMode(mode);
         if (disposed || !ShouldRetainQueuedPageWork(pageKey) || !fallbackDiskCache.MightContain(pageKey))
         {
+            FinishTerrainSamplerLoad(pageKey);
             return;
         }
 
@@ -2059,12 +2084,14 @@ public sealed class FastPageMapLayer : RGBMapLayer
         if (!fallbackDiskCache.TryLoad(pageKey, out FastMapPageSnapshot cachedSnapshot))
         {
             Interlocked.Increment(ref terrainSamplerFallbackCacheMisses);
+            FinishTerrainSamplerLoad(pageKey);
             QueueTerrainSamplerLoad(pageKey);
             return;
         }
 
         if (disposed || mode.Version != FastMapTerrainFallbackLayer.GenerationModeVersion)
         {
+            FinishTerrainSamplerLoad(pageKey);
             return;
         }
 
@@ -2086,14 +2113,15 @@ public sealed class FastPageMapLayer : RGBMapLayer
     {
         lock (terrainSamplerLoadLock)
         {
-            if (ShouldRetainQueuedPageWork(pageKey) && queuedTerrainFallbackCacheLoads.Add(pageKey))
+            if (ShouldRetainQueuedPageWork(pageKey))
             {
                 terrainFallbackCacheLoadQueue.Enqueue(pageKey);
             }
+            else queuedTerrainFallbackCacheLoads.Remove(pageKey);
         }
     }
 
-    private void RetryOrFinishTerrainSamplerLoad(FastVec2i pageKey)
+    private void RetryOrFinishTerrainSamplerLoad(FastVec2i pageKey, bool waitingForServer = false)
     {
         lock (terrainSamplerLoadLock)
         {
@@ -2105,7 +2133,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
             }
 
             terrainSamplerLoadAttempts.TryGetValue(pageKey, out int attempts);
-            attempts++;
+            if (!waitingForServer) attempts++;
             if (attempts > config.TerrainSamplerFallbackMaxRetries)
             {
                 terrainSamplerLoadAttempts.Remove(pageKey);
@@ -2120,7 +2148,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
             }
 
             terrainSamplerLoadAttempts[pageKey] = attempts;
-            long dueMs = capi.ElapsedMilliseconds + config.TerrainSamplerFallbackRetryDelayMilliseconds;
+            long dueMs = capi.ElapsedMilliseconds + (waitingForServer ? 250 : config.TerrainSamplerFallbackRetryDelayMilliseconds);
             if (!delayedTerrainSamplerLoadQueue.TryGetValue(dueMs, out Queue<FastVec2i>? delayedAtTime))
             {
                 delayedAtTime = new Queue<FastVec2i>();
@@ -2129,7 +2157,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
             delayedAtTime.Enqueue(pageKey);
             Interlocked.Increment(ref terrainSamplerFallbackRetriesQueued);
-            if (config.LogStats)
+            if (config.LogStats && !waitingForServer)
             {
                 api.Logger.Notification("[FastMap] Terrain fallback page {0}/{1} failed; retry {2}/{3} queued.", pageKey.X, pageKey.Y, attempts, config.TerrainSamplerFallbackMaxRetries);
             }
@@ -2155,6 +2183,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
     {
         lock (terrainSamplerLoadLock)
         {
+            queuedTerrainFallbackCacheLoads.Remove(pageKey);
             terrainSamplerLoadAttempts.Remove(pageKey);
             queuedTerrainSamplerLoads.Remove(pageKey);
         }
@@ -2225,207 +2254,32 @@ public sealed class FastPageMapLayer : RGBMapLayer
     }
 
     private bool TryBuildTerrainSamplerPage(
-        FastVec2i pageKey,
-        FastMapTerrainSamplerAdapter sampler,
-        TerrainFallbackMode mode,
+        FastVec2i pageKey, FastMapTerrainSamplerAdapter sampler, TerrainFallbackMode mode,
         out int[] lowResolutionPixels)
     {
-        int sampleStep = config.TerrainSamplerFallbackResolutionScale;
-        int pageSize = FastMapPageComponent.PageSize;
-        int cellsPerAxis = (pageSize + sampleStep - 1) / sampleStep;
-        int baseBlockX = pageKey.X * pageSize;
-        int baseBlockZ = pageKey.Y * pageSize;
-        int seaLevel = api.World.SeaLevel;
-        int landColor = fallbackLandColor;
-        int waterColor = colorsByCode.TryGetValue("ocean", out int ocean) ? ocean : landColor;
-        int waterEdgeColor = colorsByCode.TryGetValue("wateredge", out int edge) ? edge : waterColor;
-        lowResolutionPixels = new int[cellsPerAxis * cellsPerAxis];
-        FastMapTerrainSamplerColumn[] terrainSamples = new FastMapTerrainSamplerColumn[lowResolutionPixels.Length];
-        int[] heights = new int[lowResolutionPixels.Length];
-        bool usePaletteFallback = mode.UseTrueColorPalette;
-        bool useBrownFallback = mode.UseFogOfWar;
-        bool useTrueColorProbes = false;
-        int trueColorProbeStride = Math.Max(1, config.TerrainSamplerFallbackTrueColorProbeStride);
-        int trueColorProbeCellsPerAxis = useTrueColorProbes ? (cellsPerAxis + trueColorProbeStride - 1) / trueColorProbeStride : 0;
-        bool[] trueColorProbeAttempted = useTrueColorProbes ? new bool[trueColorProbeCellsPerAxis * trueColorProbeCellsPerAxis] : Array.Empty<bool>();
-        int[] trueColorProbeColors = useTrueColorProbes ? new int[trueColorProbeAttempted.Length] : Array.Empty<int>();
-        int seaSamples = 0;
-        int nearSeaSamples = 0;
-        long trueColorProbes = 0;
-        long trueColorHits = 0;
-        long trueColorMisses = 0;
-        if (colorAccurate && !usePaletteFallback && !useBrownFallback)
+        int step=config.TerrainSamplerFallbackResolutionScale;
+        int x=pageKey.X*FastMapPageComponent.PageSize, z=pageKey.Y*FastMapPageComponent.PageSize;
+        int style=mode.UseFogOfWar ? 1 : mode.UseTrueColorPalette ? 2 : 0;
+        lowResolutionPixels=Array.Empty<int>();
+        if (colorAccurate && style==0) return false;
+        if (sampler.IsRemote)
         {
-            return false;
+            lowResolutionPixels=sampler.SampleTile(pageKey.X,pageKey.Y,step,style);
+            return true;
         }
-
-        for (int cellZ = 0; cellZ < cellsPerAxis; cellZ++)
-        {
-            if (disposed)
-            {
-                return false;
-            }
-
-            int localZ = cellZ * sampleStep;
-            int worldZ = baseBlockZ + localZ;
-            for (int cellX = 0; cellX < cellsPerAxis; cellX++)
-            {
-                if (disposed)
-                {
-                    return false;
-                }
-
-                int localX = cellX * sampleStep;
-                int worldX = baseBlockX + localX;
-                FastMapTerrainSamplerColumn terrainSample = AdjustTerrainSamplerFallbackSample(sampler.SampleColumn(worldX, worldZ));
-                int height = terrainSample.Height;
-                int sampleIndex = cellZ * cellsPerAxis + cellX;
-                terrainSamples[sampleIndex] = terrainSample;
-                heights[sampleIndex] = height;
-                if (FastMapTerrainWater.IsWaterHeight(height, seaLevel, terrainSamplerFallbackWaterLevelOffset))
-                {
-                    seaSamples++;
-                }
-                else if (height <= seaLevel + 2)
-                {
-                    nearSeaSamples++;
-                }
-
-            }
-        }
-
-        for (int cellZ = 0; cellZ < cellsPerAxis; cellZ++)
-        {
-            if (disposed)
-            {
-                return false;
-            }
-
-            int localZ = cellZ * sampleStep;
-            int worldZ = baseBlockZ + localZ;
-            for (int cellX = 0; cellX < cellsPerAxis; cellX++)
-            {
-                if (disposed)
-                {
-                    return false;
-                }
-
-                int localX = cellX * sampleStep;
-                int worldX = baseBlockX + localX;
-                int sampleIndex = cellZ * cellsPerAxis + cellX;
-                FastMapTerrainSamplerColumn terrainSample = terrainSamples[sampleIndex];
-                int height = heights[sampleIndex];
-                int westHeight = cellX > 0 ? heights[sampleIndex - 1] : GetAdjustedTerrainSamplerFallbackHeight(sampler, worldX - sampleStep, worldZ);
-                int northHeight = cellZ > 0 ? heights[sampleIndex - cellsPerAxis] : GetAdjustedTerrainSamplerFallbackHeight(sampler, worldX, worldZ - sampleStep);
-                int diagonalHeight = cellX > 0 && cellZ > 0
-                    ? heights[sampleIndex - cellsPerAxis - 1]
-                    : GetAdjustedTerrainSamplerFallbackHeight(sampler, worldX - sampleStep, worldZ - sampleStep);
-
-                int color;
-                if (useBrownFallback && fallbackPalette.TryGetBrownColor(height, worldX, worldZ, out int brownColor))
-                {
-                    bool flattenBrownColor = FastMapTerrainWater.IsWaterHeight(height, seaLevel, terrainSamplerFallbackWaterLevelOffset);
-                    int brownFallbackColor = TerrainSamplerFallbackBrownColor(brownColor, height, seaLevel, worldX, worldZ, flattenBrownColor);
-                    brownFallbackColor = TerrainSamplerBrownClimateTintColor(brownFallbackColor, terrainSample, flattenBrownColor, seaLevel);
-                    color = flattenBrownColor
-                        ? brownFallbackColor
-                        : TerrainSamplerShadeColor(brownFallbackColor, height, westHeight, northHeight, diagonalHeight, seaLevel);
-                }
-                else if (usePaletteFallback)
-                {
-                    bool paletteSnow = IsTerrainSamplerSnow(terrainSample, height, seaLevel);
-                    if (!fallbackPalette.TryGetColor(
-                        height,
-                        seaLevel,
-                        terrainSamplerFallbackWaterLevelOffset,
-                        paletteSnow,
-                        dryGrassWeight: 0f,
-                        lushGrassWeight: 0f,
-                        worldX,
-                        worldZ,
-                        out int paletteColor,
-                        out bool flattenPaletteColor))
-                    {
-                        return false;
-                    }
-
-                    if (!flattenPaletteColor && !paletteSnow)
-                    {
-                        int shadedAlbedo = TerrainSamplerShadeColor(paletteColor, height, westHeight, northHeight, diagonalHeight, seaLevel);
-                        color = PackFallbackGrassPixel(shadedAlbedo, terrainSample, height, seaLevel);
-                    }
-                    else
-                    {
-                        if (flattenPaletteColor)
-                        {
-                            int adjustedTemperature = terrainSample.HasClimate
-                                ? Climate.GetAdjustedTemperature(TerrainSamplerUnscaledTemperature(terrainSample), height - seaLevel)
-                                : 0;
-                            int rainfall = terrainSample.HasClimate
-                                ? Climate.GetRainFall(TerrainSamplerUnscaledRainfall(terrainSample), height)
-                                : 0;
-                            paletteColor = fallbackPalette.TerrainSamplerWaterColor(
-                                rainfall,
-                                adjustedTemperature,
-                                terrainSample.HasClimate,
-                                worldX,
-                                worldZ,
-                                height);
-                        }
-
-                        color = flattenPaletteColor
-                            ? paletteColor
-                            : paletteSnow
-                                ? TerrainSamplerShadeSnowColor(
-                                    PushSnowColorTowardVanillaTarget(paletteColor),
-                                    height,
-                                    westHeight,
-                                    northHeight,
-                                    diagonalHeight,
-                                    seaLevel)
-                                : TerrainSamplerShadeColor(paletteColor, height, westHeight, northHeight, diagonalHeight, seaLevel);
-                    }
-                }
-                else
-                {
-                    int climateLandColor = TerrainSamplerClimateTintColor(landColor, terrainSample, water: false, worldX, worldZ, seaLevel);
-                    color = TerrainSamplerColor(height, westHeight, northHeight, diagonalHeight, seaLevel, terrainSamplerFallbackWaterLevelOffset, climateLandColor, waterColor, waterEdgeColor);
-                    color = TerrainSamplerColdSnowTintColor(color, terrainSample, height, westHeight, northHeight, diagonalHeight, seaLevel, worldX, worldZ);
-                }
-
-                if (useTrueColorProbes
-                    && FastMapTerrainWater.IsLandHeight(height, seaLevel, terrainSamplerFallbackWaterLevelOffset)
-                    && TryGetCachedTerrainSamplerTrueColor(
-                        cellX,
-                        cellZ,
-                        trueColorProbeStride,
-                        trueColorProbeCellsPerAxis,
-                        baseBlockX,
-                        baseBlockZ,
-                        sampleStep,
-                        sampler,
-                        trueColorProbeAttempted,
-                        trueColorProbeColors,
-                        ref trueColorProbes,
-                        ref trueColorHits,
-                        ref trueColorMisses,
-                        out int trueColor))
-                {
-                    color = TerrainSamplerShadeColor(trueColor, height, westHeight, northHeight, diagonalHeight, seaLevel);
-                }
-
-                lowResolutionPixels[cellZ * cellsPerAxis + cellX] = color;
-            }
-        }
-
-        Interlocked.Add(ref terrainSamplerFallbackSamples, cellsPerAxis * cellsPerAxis);
-        Interlocked.Add(ref terrainSamplerFallbackSeaSamples, seaSamples);
-        Interlocked.Add(ref terrainSamplerFallbackNearSeaSamples, nearSeaSamples);
-        Interlocked.Add(ref terrainSamplerFallbackTrueColorProbes, trueColorProbes);
-        Interlocked.Add(ref terrainSamplerFallbackTrueColorHits, trueColorHits);
-        Interlocked.Add(ref terrainSamplerFallbackTrueColorMisses, trueColorMisses);
+        int width=(FastMapPageComponent.PageSize+step-1)/step+1;
+        var grid=sampler.SampleGrid(x-step,z-step,width,width,step);
+        var renderer=new FastMapTerrainRenderer(config,fallbackPalette,api.World.BlockAccessor.MapSizeY,terrainSamplerFallbackHeightOffset);
+        int ocean=colorsByCode.TryGetValue("ocean",out int water)?water:fallbackLandColor;
+        int edge=colorsByCode.TryGetValue("wateredge",out int shore)?shore:ocean;
+        lowResolutionPixels=renderer.Render(grid,x,z,step,api.World.SeaLevel,fallbackLandColor,ocean,edge,style);
+        Interlocked.Add(ref terrainSamplerFallbackSamples,(long)width*width);
         return true;
     }
+
+    private int TerrainSamplerFallbackSnowStartHeight(int seaLevel) =>
+        new FastMapTerrainRenderer(config,fallbackPalette,api.World.BlockAccessor.MapSizeY,terrainSamplerFallbackHeightOffset)
+            .TerrainSamplerFallbackSnowStartHeight(seaLevel);
 
     private bool TryGetCachedTerrainSamplerTrueColor(
         int cellX,
@@ -2548,363 +2402,6 @@ public sealed class FastPageMapLayer : RGBMapLayer
         InvalidHeight,
         Air,
         ColorError
-    }
-
-    private static int TerrainSamplerColor(
-        int height,
-        int westHeight,
-        int northHeight,
-        int diagonalHeight,
-        int seaLevel,
-        int waterLevelOffset,
-        int landColor,
-        int waterColor,
-        int waterEdgeColor)
-    {
-        if (FastMapTerrainWater.IsWaterHeight(height, seaLevel, waterLevelOffset))
-        {
-            // Vanilla keeps ocean pixels flat in the non-true-colour map path and only colours shorelines as wateredge.
-            bool nearLand = FastMapTerrainWater.IsLandHeight(westHeight, seaLevel, waterLevelOffset)
-                || FastMapTerrainWater.IsLandHeight(northHeight, seaLevel, waterLevelOffset)
-                || FastMapTerrainWater.IsLandHeight(diagonalHeight, seaLevel, waterLevelOffset);
-            return (nearLand ? waterEdgeColor : waterColor) | unchecked((int)0xFF000000);
-        }
-
-        return TerrainSamplerShadeColor(landColor, height, westHeight, northHeight, diagonalHeight, seaLevel);
-    }
-
-    private static int TerrainSamplerShadeColor(int color, int height, int westHeight, int northHeight, int diagonalHeight, int seaLevel)
-    {
-        int diagonalDelta = height - diagonalHeight;
-        int westDelta = height - westHeight;
-        int northDelta = height - northHeight;
-        float signSum = Math.Sign(diagonalDelta) + Math.Sign(westDelta) + Math.Sign(northDelta);
-        float maxDelta = Math.Max(Math.Max(Math.Abs(diagonalDelta), Math.Abs(westDelta)), Math.Abs(northDelta));
-        float relief = Math.Min(0.5f, maxDelta / 12f);
-        float altitude = Math.Clamp((height - seaLevel) / 180f, 0f, 0.35f);
-        float shade = signSum > 0f
-            ? 1.02f + relief * 0.55f + altitude
-            : signSum < 0f
-                ? 0.96f - relief * 0.35f + altitude * 0.5f
-                : 1f + altitude * 0.75f;
-
-        return ColorUtil.ColorMultiply3Clamped(color, shade) | unchecked((int)0xFF000000);
-    }
-
-    private static int TerrainSamplerFallbackBrownColor(int color, int height, int seaLevel, int worldX, int worldZ, bool water)
-    {
-        uint hash = MixFallbackNoise((uint)worldX, (uint)worldZ, (uint)height);
-        float contrast = water ? 1.0f : 1.04f;
-        int noise = water ? 0 : (int)(hash % 7) - 3;
-        int altitude = Math.Clamp(height - seaLevel, -32, 220);
-        int altitudeLift = water ? -14 : (int)MathF.Round(altitude * 0.01f);
-        int adjusted = AdjustFallbackBrownColor(color, contrast, noise + altitudeLift);
-        return water ? adjusted : BlendFallbackBrownColor(adjusted, color, 0.55f);
-    }
-
-    private int TerrainSamplerBrownClimateTintColor(int color, FastMapTerrainSamplerColumn sample, bool water, int seaLevel)
-    {
-        if (water || !sample.HasClimate)
-        {
-            return color;
-        }
-
-        float rainfall = Math.Clamp(sample.Rainfall, 0f, 1f);
-        float temperature = Math.Clamp(sample.Temperature, 0f, 1f);
-        GetTerrainSamplerVegetationWeights(sample, seaLevel, out float forest, out float shrub);
-        float vegetation = Math.Max(forest, shrub * 0.65f);
-        float aridity = Math.Clamp(temperature * (1f - rainfall), 0f, 1f);
-
-        // Brown fallback should stay close to map-bkg.png; avoid vegetation hue shifts.
-        int valueShift = (int)MathF.Round(aridity * 3f - Math.Max(0f, rainfall - 0.75f) * 2f - vegetation * 2f);
-        return AdjustFallbackBrownColor(color, 1.0f, valueShift);
-    }
-
-    private int TerrainSamplerClimateTintColor(int color, FastMapTerrainSamplerColumn sample, bool water, int worldX, int worldZ, int seaLevel)
-    {
-        if (water || !sample.HasClimate)
-        {
-            return color;
-        }
-
-        float rainfall = Math.Clamp(sample.Rainfall, 0f, 1f);
-        float temperature = Math.Clamp(sample.Temperature, 0f, 1f);
-        float dryness = 1f - rainfall;
-        float cold = 0.5f - temperature;
-        GetTerrainSamplerVegetationWeights(sample, seaLevel, out float forest, out float shrub);
-        float vegetation = Math.Max(forest, shrub * 0.45f);
-        float aridity = Math.Clamp(temperature * dryness, 0f, 1f);
-        float aridWeight = Math.Clamp((aridity - 0.28f) / 0.55f, 0f, 0.85f) * (1f - vegetation * 0.85f);
-
-        int tinted = BlendFallbackBrownColor(color, unchecked((int)0xFF68A4C4), aridWeight);
-        if (shrub > 0f)
-        {
-            int shrubColor = ApplyVegetationValueNoise(unchecked((int)0xFF61A39C), worldX, worldZ, sample.Height, 0x9E3779B9u);
-            tinted = BlendFallbackBrownColor(tinted, shrubColor, Math.Clamp(shrub * 0.38f, 0f, 0.45f));
-        }
-
-        if (forest > 0f)
-        {
-            int forestColor = ApplyVegetationValueNoise(unchecked((int)0xFF4C8498), worldX, worldZ, sample.Height, 0x85EBCA6Bu);
-            tinted = BlendFallbackBrownColor(tinted, forestColor, Math.Clamp(forest * 0.72f, 0f, 0.78f));
-        }
-
-        int greenShift = (int)MathF.Round((rainfall - 0.5f) * 2f);
-        int blueShift = (int)MathF.Round(cold * 3f);
-        int valueShift = (int)MathF.Round(-Math.Max(0f, rainfall - 0.8f) * 2f);
-
-        int r = Math.Clamp((tinted & 0xFF) + valueShift, 0, 255);
-        int g = Math.Clamp(((tinted >> 8) & 0xFF) + greenShift + valueShift, 0, 255);
-        int b = Math.Clamp(((tinted >> 16) & 0xFF) + blueShift + valueShift, 0, 255);
-        return unchecked((int)0xFF000000) | (b << 16) | (g << 8) | r;
-    }
-
-    private int TerrainSamplerPaletteClimateTintColor(int color, FastMapTerrainSamplerColumn sample, int worldX, int worldZ, int seaLevel)
-    {
-        if (!sample.HasClimate)
-        {
-            return color;
-        }
-
-        int tinted = color;
-        GetTerrainSamplerVegetationWeights(sample, seaLevel, out float forest, out float shrub);
-        if (shrub > 0f)
-        {
-            int shrubColor = fallbackPalette.TryGetTreeColor(sample.Height, worldX, worldZ, 0x9E3779B9u, out int paletteShrubColor)
-                ? paletteShrubColor
-                : unchecked((int)0xFF4F6B78);
-            shrubColor = ApplyVegetationValueNoise(shrubColor, worldX, worldZ, sample.Height, 0x9E3779B9u);
-            shrubColor = BlendFallbackBrownColor(shrubColor, unchecked((int)0xFF3A596B), 0.42f);
-            tinted = BlendFallbackBrownColor(tinted, shrubColor, Math.Clamp(shrub * 0.26f, 0f, 0.38f));
-        }
-
-        if (forest > 0f)
-        {
-            int forestColor = fallbackPalette.TryGetTreeColor(sample.Height, worldX, worldZ, 0x85EBCA6Bu, out int paletteForestColor)
-                ? paletteForestColor
-                : unchecked((int)0xFF3E5F73);
-            forestColor = ApplyVegetationValueNoise(forestColor, worldX, worldZ, sample.Height, 0x85EBCA6Bu);
-            forestColor = BlendFallbackBrownColor(forestColor, unchecked((int)0xFF2F4A5D), 0.48f);
-            tinted = BlendFallbackBrownColor(tinted, forestColor, Math.Clamp(forest * 0.5f, 0f, 0.62f));
-        }
-
-        return tinted;
-    }
-
-    private void GetTerrainSamplerGrassSpectrumWeights(
-        FastMapTerrainSamplerColumn sample,
-        int height,
-        int seaLevel,
-        out float dryWeight,
-        out float lushWeight)
-    {
-        dryWeight = 0f;
-        lushWeight = 0f;
-        if (!sample.HasClimate)
-        {
-            return;
-        }
-
-        float fertility = TerrainSamplerFertility(sample, height, seaLevel);
-        dryWeight = SmoothStep(0.42f, 0.12f, fertility);
-        lushWeight = SmoothStep(0.48f, 0.82f, fertility);
-    }
-
-    private void GetTerrainSamplerVegetationWeights(FastMapTerrainSamplerColumn sample, int seaLevel, out float forest, out float shrub)
-    {
-        float rawForest = Math.Clamp(sample.ForestDensity, 0f, 1f);
-        float rawShrub = Math.Clamp(sample.ShrubDensity, 0f, 1f);
-        if (!sample.HasClimate || rawForest <= 0f && rawShrub <= 0f)
-        {
-            forest = rawForest;
-            shrub = rawShrub;
-            return;
-        }
-
-        float adjustedRain = TerrainSamplerAdjustedRainfall(sample, sample.Height);
-        float adjustedTemp = TerrainSamplerTemperatureCelsius(sample, sample.Height, seaLevel);
-        float relativeHeight = TerrainSamplerRelativeHeight(sample.Height, seaLevel);
-        float fertilityRel = TerrainSamplerFertility(sample, sample.Height, seaLevel);
-
-        // Vanilla still uses forest/shrub maps as density gates, but tree choice is climate-scored.
-        // This broad suitability curve keeps the tint closer to where actual vegetation can appear.
-        float forestClimate = SmoothStep(0.22f, 0.48f, adjustedRain)
-            * SmoothStep(-8f, 4f, adjustedTemp)
-            * (1f - SmoothStep(34f, 42f, adjustedTemp))
-            * SmoothStep(0.12f, 0.36f, fertilityRel)
-            * (1f - SmoothStep(0.72f, 0.96f, relativeHeight));
-        float shrubClimate = SmoothStep(0.10f, 0.32f, adjustedRain)
-            * SmoothStep(-14f, -2f, adjustedTemp)
-            * (1f - SmoothStep(38f, 46f, adjustedTemp))
-            * SmoothStep(0.08f, 0.26f, fertilityRel)
-            * (1f - SmoothStep(0.78f, 1.0f, relativeHeight));
-
-        forest = rawForest * Math.Clamp(0.08f + forestClimate * 0.92f, 0f, 1f);
-        shrub = rawShrub * Math.Clamp(0.12f + shrubClimate * 0.88f, 0f, 1f);
-    }
-
-    private float TerrainSamplerRelativeHeight(int height, int seaLevel)
-    {
-        int mapHeight = Math.Max(seaLevel + 1, capi.World.BlockAccessor.MapSizeY);
-        return Math.Clamp((height - seaLevel) / (float)(mapHeight - seaLevel), 0f, 1f);
-    }
-
-    private float TerrainSamplerFertility(FastMapTerrainSamplerColumn sample, int height, int seaLevel)
-    {
-        float adjustedTemp = TerrainSamplerTemperatureCelsius(sample, height, seaLevel);
-        float relativeHeight = TerrainSamplerRelativeHeight(height, seaLevel);
-        int rain = Math.Clamp((int)MathF.Round(TerrainSamplerAdjustedRainfall(sample, height) * 255f), 0, 255);
-        return Climate.GetFertility(rain, adjustedTemp, relativeHeight) / 255f;
-    }
-
-    private static float TerrainSamplerAdjustedRainfall(FastMapTerrainSamplerColumn sample, int height)
-    {
-        int unscaledRain = (sample.ClimateColor >> 8) & 0xFF;
-        if (unscaledRain == 0)
-        {
-            unscaledRain = Math.Clamp((int)MathF.Round(sample.Rainfall * 255f), 0, 255);
-        }
-
-        return Climate.GetRainFall(unscaledRain, height) / 255f;
-    }
-
-    private static float SmoothStep(float edge0, float edge1, float value)
-    {
-        if (Math.Abs(edge1 - edge0) < 0.0001f)
-        {
-            return value >= edge1 ? 1f : 0f;
-        }
-
-        float t = Math.Clamp((value - edge0) / (edge1 - edge0), 0f, 1f);
-        return t * t * (3f - 2f * t);
-    }
-
-    private int TerrainSamplerColdSnowTintColor(
-        int color,
-        FastMapTerrainSamplerColumn sample,
-        int height,
-        int westHeight,
-        int northHeight,
-        int diagonalHeight,
-        int seaLevel,
-        int worldX,
-        int worldZ)
-    {
-        if (!IsTerrainSamplerSnow(sample, height, seaLevel))
-        {
-            return color;
-        }
-
-        int snowColor = fallbackPalette.TryGetSnowColor(height, worldX, worldZ, out int paletteSnowColor)
-            ? paletteSnowColor
-            : unchecked((int)0xFFC0E0E0);
-        snowColor = PushSnowColorTowardVanillaTarget(snowColor);
-        return TerrainSamplerShadeSnowColor(snowColor, height, westHeight, northHeight, diagonalHeight, seaLevel);
-    }
-
-    private bool IsTerrainSamplerSnow(FastMapTerrainSamplerColumn sample, int height, int seaLevel)
-    {
-        if (height < TerrainSamplerFallbackSnowStartHeight(seaLevel)
-            || FastMapTerrainWater.IsWaterHeight(height, seaLevel, terrainSamplerFallbackWaterLevelOffset)
-            || !sample.HasClimate)
-        {
-            return false;
-        }
-
-        return TerrainSamplerTemperatureCelsius(sample, height, seaLevel) < -10f;
-    }
-
-    private int TerrainSamplerFallbackSnowStartHeight(int seaLevel)
-    {
-        int worldHeight = Math.Max(seaLevel + 1, api.World.BlockAccessor.MapSizeY);
-        const int referenceWorldHeight = 384;
-        int referenceSeaLevel = TerrainSamplerReferenceSeaLevel(referenceWorldHeight);
-        int referenceSkyHeight = Math.Max(1, referenceWorldHeight - referenceSeaLevel);
-        int worldSkyHeight = Math.Max(1, worldHeight - seaLevel);
-        float relativeAboveSea = Math.Clamp(
-            (config.TerrainSamplerFallbackSnowStartHeight - referenceSeaLevel) / (float)referenceSkyHeight,
-            0f,
-            1f);
-
-        int scaledHeight = seaLevel + (int)MathF.Round(relativeAboveSea * worldSkyHeight);
-        return Math.Clamp(scaledHeight, seaLevel + 1, worldHeight - 1);
-    }
-
-    private static int TerrainSamplerReferenceSeaLevel(int worldHeight)
-    {
-        return (int)(worldHeight * 0.43137254901960786);
-    }
-
-    private static float TerrainSamplerTemperatureCelsius(FastMapTerrainSamplerColumn sample, int height, int seaLevel)
-    {
-        int unscaledTemp = (sample.ClimateColor >> 16) & 0xFF;
-        if (unscaledTemp == 0)
-        {
-            unscaledTemp = Math.Clamp((int)MathF.Round(sample.Temperature * 255f), 0, 255);
-        }
-
-        return Climate.GetScaledAdjustedTemperatureFloat(unscaledTemp, height - seaLevel);
-    }
-
-    private static int PushSnowColorTowardVanillaTarget(int color)
-    {
-        const int targetSnowColor = unchecked((int)0xFFC0E0E0); // #e0e0c0 in Vintage Story's 0xAABBGGRR map color order.
-        int targetHueColor = BlendFallbackBrownColor(color, targetSnowColor, 0.75f);
-        return ColorUtil.ColorMultiply3Clamped(targetHueColor, 0.86f) | unchecked((int)0xFF000000);
-    }
-
-    private static int TerrainSamplerShadeSnowColor(int color, int height, int westHeight, int northHeight, int diagonalHeight, int seaLevel)
-    {
-        int diagonalDelta = height - diagonalHeight;
-        int westDelta = height - westHeight;
-        int northDelta = height - northHeight;
-        float signSum = Math.Sign(diagonalDelta) + Math.Sign(westDelta) + Math.Sign(northDelta);
-        float maxDelta = Math.Max(Math.Max(Math.Abs(diagonalDelta), Math.Abs(westDelta)), Math.Abs(northDelta));
-        float relief = Math.Min(0.65f, maxDelta / 10f);
-        float altitude = Math.Clamp((height - seaLevel) / 220f, 0f, 0.22f);
-        float shade = signSum > 0f
-            ? 0.98f + relief * 0.45f + altitude
-            : signSum < 0f
-                ? 0.78f - relief * 0.12f + altitude * 0.25f
-                : 0.9f + altitude * 0.45f;
-
-        return ColorUtil.ColorMultiply3Clamped(color, shade) | unchecked((int)0xFF000000);
-    }
-
-    private static int ApplyVegetationValueNoise(int color, int worldX, int worldZ, int height, uint salt)
-    {
-        uint hash = MixFallbackNoise((uint)worldX ^ salt, (uint)worldZ, (uint)height);
-        float multiplier = 0.7f + (hash & 0xFFFF) / 65535f * 0.6f;
-        int r = Math.Clamp((int)MathF.Round((color & 0xFF) * multiplier), 0, 255);
-        int g = Math.Clamp((int)MathF.Round(((color >> 8) & 0xFF) * multiplier), 0, 255);
-        int b = Math.Clamp((int)MathF.Round(((color >> 16) & 0xFF) * multiplier), 0, 255);
-        return unchecked((int)0xFF000000) | (b << 16) | (g << 8) | r;
-    }
-
-    private static int AdjustFallbackBrownColor(int color, float contrast, int brightnessOffset)
-    {
-        int r = AdjustFallbackChannel(color & 0xFF, contrast, brightnessOffset);
-        int g = AdjustFallbackChannel((color >> 8) & 0xFF, contrast, brightnessOffset);
-        int b = AdjustFallbackChannel((color >> 16) & 0xFF, contrast, brightnessOffset);
-        return unchecked((int)0xFF000000) | (b << 16) | (g << 8) | r;
-    }
-
-    private static int AdjustFallbackChannel(int value, float contrast, int brightnessOffset)
-    {
-        return Math.Clamp((int)MathF.Round((value - 128) * contrast + 128 + brightnessOffset), 24, 235);
-    }
-
-    private static int BlendFallbackBrownColor(int color, int sourceColor, float sourceWeight)
-    {
-        int r = BlendFallbackChannel(color & 0xFF, sourceColor & 0xFF, sourceWeight);
-        int g = BlendFallbackChannel((color >> 8) & 0xFF, (sourceColor >> 8) & 0xFF, sourceWeight);
-        int b = BlendFallbackChannel((color >> 16) & 0xFF, (sourceColor >> 16) & 0xFF, sourceWeight);
-        return unchecked((int)0xFF000000) | (b << 16) | (g << 8) | r;
-    }
-
-    private static int BlendFallbackChannel(int value, int sourceValue, float sourceWeight)
-    {
-        return Math.Clamp((int)MathF.Round(value * (1f - sourceWeight) + sourceValue * sourceWeight), 0, 255);
     }
 
     private static uint MixFallbackNoise(uint x, uint z, uint height)
@@ -3435,6 +2932,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
             if (snapshot.Synthetic && !TerrainFallbackLayerActive)
             {
+                FinishTerrainSamplerLoad(snapshot.PageKey);
                 continue;
             }
 
@@ -3442,6 +2940,7 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 ? GetOrCreateFallbackPage(snapshot.PageKey)
                 : GetOrCreatePage(snapshot.PageKey);
             page.ApplySnapshot(snapshot);
+            if (snapshot.Synthetic) FinishTerrainSamplerLoad(snapshot.PageKey);
             if (!snapshot.Synthetic)
             {
                 MarkSnapshotChunksKnown(snapshot);
