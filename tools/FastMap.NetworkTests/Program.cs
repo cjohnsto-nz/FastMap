@@ -489,4 +489,74 @@ Check(!new TerrainSamplingStatus{Available=true}.CanUseTiles,"Missing identity c
 Check(!new TerrainSamplingStatus{Version=6,Available=true,RenderingFingerprint=originalFingerprint}.CanUseTiles,"Previous protocol cannot bypass rendering identity negotiation");
 Check(!new TerrainSamplingStatus{Available=true,RenderingFingerprint="../../other-cache"}.CanUseTiles,"Untrusted identity cannot become a filesystem path");
 Check(TerrainRenderingIdentity.CacheSuffix(null)!=TerrainRenderingIdentity.CacheSuffix(originalFingerprint),"Pre-handshake cache is isolated until the server identity arrives");
-Console.WriteLine($"PASS {assertions} assertions including tick-thread sampling with worker rendering and negotiated cache identity.");
+// Vanilla captures a List enumerator before the handshake changes the live list.
+// Reproduce the reported failure, then exercise every production publication path.
+var mutatedLayers = new List<string> { "waypoints", "old-terrain", "overlay" };
+var invalidatedEnumerator = mutatedLayers.GetEnumerator();
+Check(invalidatedEnumerator.MoveNext(), "Vanilla enumeration starts before handshake");
+mutatedLayers[1] = "new-terrain";
+Failed(() => invalidatedEnumerator.MoveNext());
+foreach (string operation in new[] { "replace", "mapper-insert", "overlay-remove", "overlay-append" })
+{
+    var oldLayers = new List<string> { "waypoints", "old-terrain", "overlay" };
+    var inFlight = oldLayers.GetEnumerator();
+    Check(inFlight.MoveNext(), "Worker captures the old layer list");
+    var published = operation switch
+    {
+        "replace" => MapLayerList.Replace(oldLayers, 1, "new-terrain"),
+        "mapper-insert" => MapLayerList.Insert(oldLayers, 2, "fastmap"),
+        "overlay-remove" => MapLayerList.RemoveAt(oldLayers, 2),
+        _ => MapLayerList.Insert(oldLayers, oldLayers.Count, "new-overlay")
+    };
+    Check(!ReferenceEquals(published, oldLayers), "Publish an independent layer list");
+    var remaining = new List<string>();
+    while (inFlight.MoveNext()) remaining.Add(inFlight.Current);
+    Check(remaining.SequenceEqual(new[] { "old-terrain", "overlay" }), "In-flight enumeration finishes without mutation or skipped layers");
+    string[] expected = operation switch
+    {
+        "replace" => new[] { "waypoints", "new-terrain", "overlay" },
+        "mapper-insert" => new[] { "waypoints", "old-terrain", "fastmap", "overlay" },
+        "overlay-remove" => new[] { "waypoints", "old-terrain" },
+        _ => new[] { "waypoints", "old-terrain", "overlay", "new-overlay" }
+    };
+    Check(published.SequenceEqual(expected), "Next worker iteration sees the complete replacement in order");
+}
+
+// Hold both an off-thread tick and a page task open during retirement. Cleanup
+// must await both, and a task dispatched earlier but not yet started must be denied.
+var retiringLifetime = new MapLayerWorkerLifetime();
+Check(retiringLifetime.TryEnter(), "Existing map tick admitted");
+Check(retiringLifetime.TryEnter(), "Existing page task admitted concurrently");
+int resourcesDisposed = 0;
+var retirement = Task.Run(() =>
+{
+    retiringLifetime.StopAndWait();
+    Interlocked.Exchange(ref resourcesDisposed, 1);
+});
+bool retirementStarted = SpinWait.SpinUntil(() =>
+{
+    if (!retiringLifetime.TryEnter()) return true;
+    retiringLifetime.Exit();
+    return false;
+}, 5000);
+try
+{
+    Check(retirementStarted, "Retirement closes work admission before cleanup");
+    Check(Volatile.Read(ref resourcesDisposed) == 0, "Resources survive active tick and task");
+    Check(!retiringLifetime.TryEnter(), "Late task and stale-list tick cannot enter retired layer");
+}
+finally { retiringLifetime.Exit(); }
+try
+{
+    Check(Volatile.Read(ref resourcesDisposed) == 0, "One finished worker cannot free resources still used by another");
+}
+finally { retiringLifetime.Exit(); }
+Check(retirement.Wait(5000) && resourcesDisposed == 1, "Resources released after all admitted work exits");
+retiringLifetime.StopAndWait();
+Check(!retiringLifetime.TryEnter(), "Repeated retirement stays closed without waiting");
+var nextLifetime = new MapLayerWorkerLifetime();
+Check(nextLifetime.TryEnter(), "Replacement layer has an independent active lifetime");
+nextLifetime.Exit();
+nextLifetime.StopAndWait();
+
+Console.WriteLine($"PASS {assertions} assertions including immutable layer publication and worker retirement.");

@@ -447,7 +447,7 @@ public sealed class FastMapModSystem : ModSystem
 
                 FastPageMapLayer replacement = new(capi, worldMapManager);
                 replacement.OnLoaded();
-                worldMapManager.MapLayers[i] = replacement;
+                worldMapManager.MapLayers = MapLayerList.Replace<MapLayer>(worldMapManager.MapLayers, i, replacement);
             }
         }
 
@@ -565,9 +565,7 @@ public sealed class FastMapModSystem : ModSystem
                 oldLayer.Dispose();
                 MapLayer replacement = (MapLayer)Activator.CreateInstance(typeof(T), capi!, worldMapManager)!;
                 replacement.OnLoaded();
-                var replacementLayers = new List<MapLayer>(worldMapManager.MapLayers);
-                replacementLayers[existingIndex] = replacement;
-                worldMapManager.MapLayers = replacementLayers;
+                worldMapManager.MapLayers = MapLayerList.Replace(worldMapManager.MapLayers, existingIndex, replacement);
                 return;
             }
 
@@ -575,7 +573,7 @@ public sealed class FastMapModSystem : ModSystem
             {
                 MapLayer layer = (MapLayer)Activator.CreateInstance(typeof(T), capi!, worldMapManager)!;
                 layer.OnLoaded();
-                worldMapManager.MapLayers = new List<MapLayer>(worldMapManager.MapLayers) { layer };
+                worldMapManager.MapLayers = MapLayerList.Insert(worldMapManager.MapLayers, worldMapManager.MapLayers.Count, layer);
             }
 
             return;
@@ -590,9 +588,7 @@ public sealed class FastMapModSystem : ModSystem
             MapLayer oldLayer = worldMapManager.MapLayers[index];
             oldLayer.OnShutDown();
             oldLayer.Dispose();
-            var remainingLayers = new List<MapLayer>(worldMapManager.MapLayers);
-            remainingLayers.RemoveAt(index);
-            worldMapManager.MapLayers = remainingLayers;
+            worldMapManager.MapLayers = MapLayerList.RemoveAt(worldMapManager.MapLayers, index);
         }
     }
 
@@ -617,7 +613,7 @@ public sealed class FastMapModSystem : ModSystem
             oldLayer.Dispose();
             FastPageMapLayer replacement = new(capi!, worldMapManager);
             replacement.OnLoaded();
-            worldMapManager.MapLayers[fastMapIndex] = replacement;
+            worldMapManager.MapLayers = MapLayerList.Replace<MapLayer>(worldMapManager.MapLayers, fastMapIndex, replacement);
             return true;
         }
 
@@ -630,7 +626,7 @@ public sealed class FastMapModSystem : ModSystem
         int insertIndex = mapperIndex >= 0 ? mapperIndex + 1 : worldMapManager.MapLayers.Count;
         FastPageMapLayer fastMapLayer = new(capi!, worldMapManager);
         fastMapLayer.OnLoaded();
-        worldMapManager.MapLayers.Insert(insertIndex, fastMapLayer);
+        worldMapManager.MapLayers = MapLayerList.Insert<MapLayer>(worldMapManager.MapLayers, insertIndex, fastMapLayer);
         capi!.Logger.Notification("[FastMap] Mapper chunk layer detected; FastMap installed as terrain render layer while Mapper keeps map state.");
         return true;
     }

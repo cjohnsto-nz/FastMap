@@ -201,7 +201,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
     private long pageLoadMs;
     private long pageUploadMs;
     private long generationMs;
-    private bool disposed;
+    private volatile bool disposed;
+    private readonly MapLayerWorkerLifetime workerLifetime = new();
 
     private readonly struct PageEvictionCandidate
     {
@@ -430,6 +431,19 @@ public sealed class FastPageMapLayer : RGBMapLayer
     }
 
     public override void OnOffThreadTick(float dt)
+    {
+        if (!workerLifetime.TryEnter()) return;
+        try
+        {
+            RunOffThreadTick(dt);
+        }
+        finally
+        {
+            workerLifetime.Exit();
+        }
+    }
+
+    private void RunOffThreadTick(float dt)
     {
         if (disposed)
         {
@@ -841,7 +855,10 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
         disposed = true;
         api.Event.ChunkDirty -= OnChunkDirty;
-        WaitForMapDatabaseTasksToStop();
+        // Close admission before freeing resources. This also drains a tick that
+        // had already passed its disposed check, and tasks it scheduled, without
+        // racing a stale list snapshot or abandoning a slow task after a timeout.
+        workerLifetime.StopAndWait();
         SnapshotAllDirtyPages();
         FlushPendingSaves();
         CloseMapDatabaseForShutdown();
@@ -878,32 +895,6 @@ public sealed class FastPageMapLayer : RGBMapLayer
         blockIsLakeByBlockId = Array.Empty<bool>();
         blockIsSnowByBlockId = Array.Empty<bool>();
         chunksTmp = Array.Empty<IWorldChunk>();
-    }
-
-    private void WaitForMapDatabaseTasksToStop()
-    {
-        const int maxWaitMs = 5000;
-        const int sleepMs = 25;
-
-        Stopwatch stopwatch = Stopwatch.StartNew();
-        while (stopwatch.ElapsedMilliseconds < maxWaitMs)
-        {
-            if (Volatile.Read(ref activePageLoadTasks) == 0
-                && Volatile.Read(ref activeTerrainSamplerLoadTasks) == 0
-                && Volatile.Read(ref activeTerrainFallbackCacheLoadTasks) == 0)
-            {
-                return;
-            }
-
-            Thread.Sleep(sleepMs);
-        }
-
-        api.Logger.Warning(
-            "[FastMap] Map DB work was still active during shutdown after {0}ms; pageActive={1}, samplerActive={2}, cacheActive={3}. Continuing shutdown without waiting longer.",
-            maxWaitMs,
-            Volatile.Read(ref activePageLoadTasks),
-            Volatile.Read(ref activeTerrainSamplerLoadTasks),
-            Volatile.Read(ref activeTerrainFallbackCacheLoadTasks));
     }
 
     private void OpenMapDatabase()
@@ -1312,8 +1303,10 @@ public sealed class FastPageMapLayer : RGBMapLayer
             Interlocked.Increment(ref pageLoadBatchesStarted);
             Task.Run(() =>
             {
+                bool entered = workerLifetime.TryEnter();
                 try
                 {
+                    if (!entered) return;
                     for (int i = 0; i < PageLoadsPerTask && TryDequeuePageLoad(out FastVec2i pageKey); i++)
                     {
                         ProcessPageLoad(pageKey);
@@ -1327,7 +1320,8 @@ public sealed class FastPageMapLayer : RGBMapLayer
                 finally
                 {
                     Interlocked.Decrement(ref activePageLoadTasks);
-                    StartTerrainSamplerLoadTasks();
+                    try { if (entered) StartTerrainSamplerLoadTasks(); }
+                    finally { if (entered) workerLifetime.Exit(); }
                 }
             });
         }
@@ -1347,14 +1341,17 @@ public sealed class FastPageMapLayer : RGBMapLayer
             Interlocked.Increment(ref activeTerrainSamplerLoadTasks);
             Task.Run(() =>
             {
+                bool entered = workerLifetime.TryEnter();
                 try
                 {
+                    if (!entered) return;
                     ProcessTerrainSamplerLoad(pageKey);
                 }
                 finally
                 {
                     Interlocked.Decrement(ref activeTerrainSamplerLoadTasks);
-                    StartTerrainSamplerLoadTasks();
+                    try { if (entered) StartTerrainSamplerLoadTasks(); }
+                    finally { if (entered) workerLifetime.Exit(); }
                 }
             });
         }
@@ -1374,14 +1371,17 @@ public sealed class FastPageMapLayer : RGBMapLayer
             Interlocked.Increment(ref activeTerrainFallbackCacheLoadTasks);
             Task.Run(() =>
             {
+                bool entered = workerLifetime.TryEnter();
                 try
                 {
+                    if (!entered) return;
                     ProcessTerrainFallbackCacheLoad(pageKey);
                 }
                 finally
                 {
                     Interlocked.Decrement(ref activeTerrainFallbackCacheLoadTasks);
-                    StartTerrainSamplerLoadTasks();
+                    try { if (entered) StartTerrainSamplerLoadTasks(); }
+                    finally { if (entered) workerLifetime.Exit(); }
                 }
             });
         }
