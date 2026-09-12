@@ -2,7 +2,7 @@ namespace FastMap.Config;
 
 public sealed class FastMapServerConfig
 {
-    public bool EnableTerrainSampling { get; set; } = true;
+    public bool EnableTerrainSampling { get; set; } = false;
     // Empty permits everyone; "controlserver" permits administrators only.
     public string RequiredPrivilege { get; set; } = "";
     public int SamplingBudgetMilliseconds { get; set; } = 2;

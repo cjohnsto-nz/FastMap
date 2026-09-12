@@ -31,13 +31,15 @@ Optional Terrain Sampler overlay layers can be enabled in config for `Rainfall`,
 
 Install the matching Fast Map package on both the client and server, and Terrain Sampler `1.3.0+` on the server. Follow Terrain Sampler's own client installation requirements too (its current package requires clients to install it). The same Fast Map ZIP contains the client map and an optional server sampling bridge; no separate companion download is needed. Restart the server after installation.
 
+Multiplayer Pregen is disabled by default. To allow it, set `EnableTerrainSampling` to `true` in the server's `ModConfig/fastmap-server.json` and restart the server. When disabled, clients hide Pregen and the sampler overlays, sample requests are denied, and server prewarming does not run even if `EnableServerPrewarm` is `true`. Existing explicit server settings are preserved on upgrade. Single-player Pregen is unaffected by this server setting.
+
 Fast Map discovers the server bridge after joining. Pregen transfers completed pixel tiles at the configured resolution, compressed with LZ4 and fragmented into at most 32 KiB packets. A default tile is 256 by 256 pixels (256 KiB before compression), not a grid of full terrain samples. The server samples an area once and renders Normal, Fog of War and True Colour variants; clients download only their selected variant. Packed seasonal grass metadata remains in the pixels, allowing client season controls without resampling. Protocol v6 requires matching client/server builds.
 
 The server creates `VintagestoryData/ModConfig/fastmap-server.json`:
 
 ```json
 {
-  "EnableTerrainSampling": true,
+  "EnableTerrainSampling": false,
   "RequiredPrivilege": "",
   "SamplingBudgetMilliseconds": 2,
   "MaxSamplesPerTick": 256,

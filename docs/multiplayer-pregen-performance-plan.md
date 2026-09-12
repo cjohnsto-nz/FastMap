@@ -2,6 +2,8 @@
 
 Current implementation plan, retaining 121.6.0 / 122.6.0 while under test:
 
+Server sampling is opt-in: `EnableTerrainSampling=false` by default, matching x3200. This disables client Pregen access and all server prewarming until an administrator enables it.
+
 1. Use completed pixel tiles for Pregen networking. Share the existing renderer between local rendering and the server; render all three palette variants from one sample grid. Preserve packed seasonal metadata. Keep detailed sample networking only for optional climate overlays.
 2. Cache compressed tile variants in bounded server memory, including a reservation for the active build. Discard detailed samples after rendering. Stream only the requested variant in bounded fragments; enforce dimensions, offsets, decoded size and permissions.
 3. Independently prewarm around spawn and online players. Run at spawn with no clients connected. Prioritise live requests, throttle under load, bound the desired area and avoid evicting useful client-requested data for speculative work. Clarify that the client switch controls local prefetch only.
