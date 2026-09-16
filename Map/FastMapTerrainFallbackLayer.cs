@@ -159,9 +159,9 @@ public sealed class FastMapTerrainFallbackLayer : MapLayer
         }
 
         guiDialogWorldMap.Composers[ComposerCode] = composer
-            .AddStaticText(Lang.Get("fastmap-pregen-background"), CairoFont.WhiteSmallText(), backgroundLabelBounds)
+            .AddStaticText(Lang.Get(capi.IsSinglePlayer ? "fastmap-pregen-background" : "fastmap-pregen-prefetch"), CairoFont.WhiteSmallText(), backgroundLabelBounds)
             .AddHoverText(
-                Lang.Get("fastmap-pregen-background-hover"),
+                Lang.Get(capi.IsSinglePlayer ? "fastmap-pregen-background-hover" : "fastmap-pregen-prefetch-hover"),
                 CairoFont.WhiteSmallText(),
                 220,
                 backgroundLabelBounds,
