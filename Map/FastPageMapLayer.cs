@@ -1015,7 +1015,15 @@ public sealed class FastPageMapLayer : RGBMapLayer
         }
 
         lastMapDbFreshnessCheckMs = nowMs;
-        lock (dbLock)
+        // Page workers can spend seconds building the first vanilla map DB index in
+        // very large worlds. Never make the render/tick thread wait behind that work;
+        // a busy lock only delays this freshness poll until the next one-second tick.
+        if (!Monitor.TryEnter(dbLock))
+        {
+            return;
+        }
+
+        try
         {
             long currentTicks = GetCurrentMapDbWriteTicks();
             if (currentTicks <= knownMapDbWriteTicks)
@@ -1025,6 +1033,12 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
             knownMapDbWriteTicks = currentTicks;
             externalMapDbChangeTicks = Math.Max(externalMapDbChangeTicks, currentTicks);
+            mapDbKnownPositions = null;
+            mapDbKnownPageKeys = null;
+        }
+        finally
+        {
+            Monitor.Exit(dbLock);
         }
 
         HandleExternalMapDbChanged();
@@ -1032,12 +1046,6 @@ public sealed class FastPageMapLayer : RGBMapLayer
 
     private void HandleExternalMapDbChanged()
     {
-        lock (dbLock)
-        {
-            mapDbKnownPositions = null;
-            mapDbKnownPageKeys = null;
-        }
-
         lock (pageLoadLock)
         {
             knownMissingPages.Clear();
