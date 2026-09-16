@@ -3240,13 +3240,16 @@ public sealed class FastPageMapLayer : RGBMapLayer
             }
         }
 
-        if (pageDiskCache.MightContain(pageKey) || MightMapDbContainPage(pageKey))
+        bool knownMissing;
+        lock (pageLoadLock)
         {
-            lock (pageLoadLock)
-            {
-                knownMissingPages.Remove(pageKey);
-            }
+            knownMissing = knownMissingPages.Contains(pageKey);
+        }
 
+        if (!knownMissing)
+        {
+            // The main thread must never wait for disk or map DB discovery. The page
+            // worker owns those checks and will enqueue terrain fallback after a miss.
             QueuePageLoad(pageKey);
             return false;
         }
